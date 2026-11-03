@@ -23,6 +23,68 @@ if valid_version '../main'; then exit 1; fi
 valid_username admin-1
 if valid_username 'admin;id'; then exit 1; fi
 
+for value in 1.1.1.1 8.8.8.8; do valid_public_ipv4 "$value" || exit 1; done
+for value in localhost LOCALHOST 192.168.1.1 'https://panel.example.com'; do
+    if valid_public_host "$value"; then exit 1; fi
+done
+for value in '' localhost 256.1.1.1 01.2.3.4 0.0.0.0 127.0.0.1 10.1.2.3 172.16.0.1 192.168.1.1 169.254.1.1 100.64.0.1 198.18.0.1 192.0.2.1 224.0.0.1 '<html>'; do
+    if valid_public_ipv4 "$value"; then printf 'Invalid public IPv4 accepted: %s\n' "$value"; exit 1; fi
+done
+(
+    # Network responses are fixtures; these checks must not contact an IP service.
+    curl() { return 1; }
+    SSH_CONNECTION='192.0.2.1 12345 8.8.8.8 22'
+    [[ $(detect_public_ipv4) == 8.8.8.8 ]]
+    SSH_CONNECTION='192.0.2.1 12345 192.168.1.2 22'
+    curl() { printf '1.1.1.1'; }
+    [[ $(detect_public_ipv4) == 1.1.1.1 ]]
+    unset SSH_CONNECTION
+    [[ $(detect_public_ipv4) == 1.1.1.1 ]]
+    curl() { printf '<html>unexpected response</html>'; }
+    if detect_public_ipv4; then exit 1; fi
+    curl() { printf '10.0.0.1'; }
+    if detect_public_ipv4; then exit 1; fi
+
+    # Replace terminal I/O only; exercise the real configuration and validation.
+    ask() {
+        local answer
+        IFS= read -r answer
+        printf -v "$1" '%s' "${answer:-$3}"
+    }
+    curl() { printf '1.1.1.1'; }
+    LISTEN=127.0.0.1:8765 ADMIN_HOST=localhost SECURE_COOKIE=false
+    configure_panel 3>/dev/null <<'INPUT'
+
+2
+
+INPUT
+    [[ $ADMIN_HOST == 1.1.1.1 && $LISTEN == 0.0.0.0:8765 && $SECURE_COOKIE == false ]]
+    ADMIN_HOST=localhost
+    configure_panel 3>/dev/null <<'INPUT'
+9000
+2
+panel.example.com
+INPUT
+    [[ $ADMIN_HOST == panel.example.com && $LISTEN == 0.0.0.0:9000 ]]
+    curl() { return 1; }
+    configure_panel 3>/dev/null <<'INPUT'
+
+2
+
+INPUT
+    [[ $ADMIN_HOST == panel.example.com ]]
+    ADMIN_HOST=localhost
+    configure_panel 3>/dev/null <<'INPUT'
+
+2
+
+localhost
+http://panel.example.com:9000
+panel.example.com
+INPUT
+    [[ $ADMIN_HOST == panel.example.com ]]
+)
+
 # Never source generated configuration as shell code.
 CONFIG_DIR=$(mktemp -d)
 trap 'rm -rf -- "$CONFIG_DIR"' EXIT

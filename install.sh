@@ -15,6 +15,35 @@ valid_port() { [[ $1 =~ ^[0-9]{1,5}$ ]] && ((10#$1 >= 1 && 10#$1 <= 65535)); }
 valid_host() {
     [[ ${#1} -le 253 && $1 =~ ^[a-zA-Z0-9]([a-zA-Z0-9.-]*[a-zA-Z0-9])?$ && $1 != *..* ]]
 }
+valid_public_ipv4() {
+    [[ $1 =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || return 1
+    local a b c d octet
+    IFS=. read -r a b c d <<< "$1"
+    for octet in "$a" "$b" "$c" "$d"; do
+        [[ $octet == 0 || $octet != 0* ]] && ((10#$octet <= 255)) || return 1
+    done
+    ((a > 0 && a < 224 && a != 10 && a != 127 &&
+        !(a == 100 && b >= 64 && b <= 127) &&
+        !(a == 172 && b >= 16 && b <= 31))) || return 1
+    case "$a.$b" in 169.254|192.168|198.18|198.19) return 1;; esac
+    case "$a.$b.$c" in 192.0.0|192.0.2|192.88.99|198.51.100|203.0.113) return 1;; esac
+}
+valid_public_host() {
+    valid_host "$1" && [[ ${1,,} != localhost ]] || return 1
+    if [[ $1 =~ ^[0-9.]+$ ]]; then valid_public_ipv4 "$1"; fi
+}
+detect_public_ipv4() {
+    local detected
+    local -a ssh_fields
+    read -r -a ssh_fields <<< "${SSH_CONNECTION:-}"
+    if valid_public_ipv4 "${ssh_fields[2]:-}"; then
+        printf '%s' "${ssh_fields[2]}"
+        return
+    fi
+    detected=$(curl --ipv4 --fail --silent --noproxy '*' --proto '=https' --connect-timeout 2 --max-time 4 https://api.ipify.org) || return 1
+    valid_public_ipv4 "$detected" || return 1
+    printf '%s' "$detected"
+}
 valid_username() { [[ $1 =~ ^[a-zA-Z0-9_.-]{1,64}$ ]]; }
 valid_version() { [[ $1 =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; }
 architecture() {
@@ -74,7 +103,22 @@ configure_panel() {
     SECURE_COOKIE=false
     case "$mode" in
         1) bind_ip=127.0.0.1; ADMIN_HOST=localhost;;
-        2) bind_ip=0.0.0.0; ask ADMIN_HOST '访问面板使用的服务器 IPv4 / 域名（不带协议和端口）' "$ADMIN_HOST"; [[ $ADMIN_HOST != localhost && $ADMIN_HOST != 127.* && $ADMIN_HOST != 0.0.0.0 ]] || die '公网方式请填写真实服务器地址';;
+        2)
+            bind_ip=0.0.0.0
+            if ! valid_public_host "$ADMIN_HOST"; then
+                printf '正在识别服务器公网 IPv4…\n' >&3
+                if ADMIN_HOST=$(detect_public_ipv4); then
+                    printf '识别到：%s；回车使用，也可修改为实际访问地址。\n' "$ADMIN_HOST" >&3
+                else
+                    ADMIN_HOST=
+                    printf '未能自动识别公网 IPv4，请手动填写公网 IPv4 或域名。\n' >&3
+                fi
+            fi
+            while true; do
+                ask ADMIN_HOST '访问面板使用的服务器 IPv4 / 域名（不带协议和端口）' "$ADMIN_HOST"
+                if valid_public_host "$ADMIN_HOST"; then break; fi
+                printf '地址无效，请填写公网 IPv4 或域名；不能使用 localhost、内网地址或带协议和端口的 URL。\n' >&3
+            done;;
         3) bind_ip=127.0.0.1; ask ADMIN_HOST '已有 HTTPS 面板域名（不带协议和端口）' "$ADMIN_HOST"; [[ $ADMIN_HOST != localhost ]] || die '请填写 HTTPS 域名'; SECURE_COOKIE=true;;
         *) die '访问方式必须为 1、2 或 3';;
     esac
