@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log"
+	"net"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -209,4 +210,33 @@ func (s *Service) probe(id string) (Health, error) {
 	s.healthMu.Unlock()
 	s.addEvent(map[bool]string{true: "info", false: "warn"}[h.Healthy], o.Name, "TCP 隧道连接测试"+map[bool]string{true: "成功", false: "失败"}[h.Healthy])
 	return h, nil
+}
+
+// Tests the configured server-side path, not public reachability or a Telegram client session.
+func (s *Service) probeInbound(id string) ([]Health, error) {
+	c := s.config.Load()
+	n := c.inbound(id)
+	if n == nil || !n.Enabled {
+		return nil, errors.New("入站不存在或已停用")
+	}
+	_, o, err := c.resolve(id)
+	if err != nil {
+		return nil, err
+	}
+	checks := make([]Health, 0, 2)
+	for _, target := range []string{dcAddresses(2)[0], net.JoinHostPort(n.TLSDomain, "443")} {
+		ctx, cancel := context.WithTimeout(s.ctx, 8*time.Second)
+		started := time.Now()
+		conn, err := dialOutbound(ctx, *o, target)
+		h := Health{Healthy: err == nil, LatencyMS: time.Since(started).Milliseconds(), TestedAt: time.Now().UTC()}
+		if conn != nil {
+			conn.Close()
+		}
+		cancel()
+		if err != nil {
+			h.Error = err.Error()
+		}
+		checks = append(checks, h)
+	}
+	return checks, nil
 }

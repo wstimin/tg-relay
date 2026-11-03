@@ -10,8 +10,10 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"runtime"
 	"strconv"
 	"sync"
+	"syscall"
 	"time"
 
 	"tgrelay/internal/mtproto/fake"
@@ -103,6 +105,9 @@ func (e *Engine) prepare(c *Config) (*listenerPlan, error) {
 		l, err := net.Listen("tcp", address)
 		if err != nil {
 			p.abort()
+			if errors.Is(err, syscall.EADDRINUSE) || (runtime.GOOS == "windows" && errors.Is(err, syscall.Errno(10048))) {
+				return nil, fmt.Errorf("端口 %d 已被占用，无法启动入站「%s」。请换一个空闲端口；面板与 TG 入站不能共用监听地址和端口: %w", n.Port, n.Name, err)
+			}
 			return nil, fmt.Errorf("无法监听入站 %s (%s): %w", n.Name, address, err)
 		}
 		p.opened[n.ID] = &listenerEntry{Listener: l, address: address}

@@ -38,6 +38,7 @@ type Route struct {
 	Name       string   `json:"name"`
 	InboundIDs []string `json:"inboundIDs"`
 	OutboundID string   `json:"outboundID"`
+	Direct     bool     `json:"direct"`
 	Priority   int      `json:"priority"`
 	Enabled    bool     `json:"enabled"`
 }
@@ -158,6 +159,9 @@ func (c *Config) resolve(inboundID string) (*Route, *Outbound, error) {
 			if id != inboundID {
 				continue
 			}
+			if r.Direct {
+				return r, &Outbound{ID: "@direct", Name: "直连 Telegram", Type: "DIRECT", Enabled: true}, nil
+			}
 			o := c.outbound(r.OutboundID)
 			if o == nil || !o.Enabled {
 				return r, nil, errors.New("匹配路由的落地出口已停用")
@@ -221,6 +225,9 @@ func validateConfig(c *Config) error {
 		if err := check(o.ID, o.Name); err != nil {
 			return err
 		}
+		if o.ID == "@direct" {
+			return errors.New("出口编号为系统保留值")
+		}
 		if (o.Type != "SOCKS5" && o.Type != "HTTP" && o.Type != "HTTPS") || !validHost(o.Host) || o.Port < 1 || o.Port > 65535 {
 			return fmt.Errorf("出口 %s 的协议、地址或端口无效", o.Name)
 		}
@@ -245,8 +252,8 @@ func validateConfig(c *Config) error {
 		if err := check(r.ID, r.Name); err != nil {
 			return err
 		}
-		if c.outbound(r.OutboundID) == nil || len(r.InboundIDs) == 0 || r.Priority < 0 || r.Priority > 1000000 {
-			return errors.New("路由必须指定有效入站、出口和优先级")
+		if (r.Direct && r.OutboundID != "") || (!r.Direct && c.outbound(r.OutboundID) == nil) || len(r.InboundIDs) == 0 || r.Priority < 0 || r.Priority > 1000000 {
+			return errors.New("路由必须指定有效入站、优先级，并在直连与落地出口中选择一种")
 		}
 		seen := map[string]bool{}
 		for _, id := range r.InboundIDs {

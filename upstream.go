@@ -43,7 +43,11 @@ func dialOutbound(ctx context.Context, o Outbound, target string) (net.Conn, err
 	if !o.Enabled {
 		return nil, errors.New("出口已停用")
 	}
-	conn, err := (&net.Dialer{Timeout: 8 * time.Second, KeepAlive: 30 * time.Second}).DialContext(ctx, "tcp", net.JoinHostPort(o.Host, strconv.Itoa(o.Port)))
+	dialer := &net.Dialer{Timeout: 8 * time.Second, KeepAlive: 30 * time.Second}
+	if o.Type == "DIRECT" {
+		return dialer.DialContext(ctx, "tcp", target)
+	}
+	conn, err := dialer.DialContext(ctx, "tcp", net.JoinHostPort(o.Host, strconv.Itoa(o.Port)))
 	if err != nil {
 		return nil, fmt.Errorf("无法连接落地服务器: %w", err)
 	}

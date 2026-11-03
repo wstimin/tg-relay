@@ -169,6 +169,15 @@ func (a *API) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
+	if len(parts) == 3 && parts[0] == "inbounds" && parts[2] == "test" && r.Method == http.MethodPost {
+		checks, err := a.s.probeInbound(parts[1])
+		if err != nil {
+			failChange(w, err)
+		} else {
+			sendJSON(w, 200, checks)
+		}
+		return
+	}
 	if len(parts) == 3 && parts[0] == "credentials" && parts[2] == "link" && r.Method == http.MethodGet {
 		cfg := a.s.config.Load()
 		cr := cfg.credential(parts[1])
@@ -176,7 +185,22 @@ func (a *API) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			fail(w, 404, "凭据不存在")
 			return
 		}
-		sendJSON(w, 200, map[string]string{"link": credentialLink(cfg.inbound(cr.InboundID), cr)})
+		n := cfg.inbound(cr.InboundID)
+		warnings := []string{}
+		if !n.Enabled {
+			warnings = append(warnings, "入站已停用")
+		}
+		if !a.s.allowed(cr.UserID, cr.ID, cr.InboundID) {
+			warnings = append(warnings, "用户或凭据已停用、到期，或流量额度已耗尽")
+		}
+		if _, _, err := cfg.resolve(n.ID); err != nil {
+			warnings = append(warnings, err.Error()+"；请在路由管理中选择直连或落地")
+		}
+		if ip := net.ParseIP(n.PublicHost); n.PublicHost == "localhost" || (ip != nil && (ip.IsLoopback() || ip.IsPrivate() || ip.IsUnspecified() || ip.IsLinkLocalUnicast())) {
+			warnings = append(warnings, "公开入口使用本地或内网地址，公网用户可能无法访问")
+		}
+		values := strings.TrimPrefix(credentialLink(n, cr), "tg://proxy?")
+		sendJSON(w, 200, map[string]any{"link": "tg://proxy?" + values, "webLink": "https://t.me/proxy?" + values, "warnings": warnings})
 		return
 	}
 	if len(parts) == 3 && parts[0] == "users" && parts[2] == "assign" && r.Method == http.MethodPost {
@@ -485,9 +509,24 @@ func (a *API) entity(w http.ResponseWriter, r *http.Request, kind, id string) {
 			if index >= 0 {
 				v = c.Inbounds[index]
 			}
+			var input struct {
+				Inbound
+				InitialRoute *struct {
+					Direct     bool   `json:"direct"`
+					OutboundID string `json:"outboundID"`
+				} `json:"initialRoute"`
+			}
+			input.Inbound = v
 			if !remove {
-				if err := decode(&v); err != nil {
+				if err := decode(&input); err != nil {
 					return err
+				}
+				v = input.Inbound
+				if input.InitialRoute != nil {
+					if id != "" {
+						return errors.New("已有入站请通过路由管理修改转发方式")
+					}
+					c.Routes = append(c.Routes, Route{ID: newID(), Name: v.Name, InboundIDs: []string{createdID}, Direct: input.InitialRoute.Direct, OutboundID: input.InitialRoute.OutboundID, Priority: 100, Enabled: true})
 				}
 			}
 			v.ID = createdID

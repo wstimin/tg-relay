@@ -383,6 +383,9 @@ func TestListenerFailureLeavesConfigAndDatabaseUnchanged(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected bind failure")
 	}
+	if !strings.Contains(err.Error(), "已被占用") {
+		t.Fatalf("bind failure is not actionable: %v", err)
+	}
 	stored, _, _, err := s.store.load()
 	if err != nil {
 		t.Fatal(err)
