@@ -17,6 +17,7 @@ trap cleanup EXIT
 mkdir -p /opt/tg-relay /etc/tg-relay /var/lib/tg-relay
 id tg-relay >/dev/null 2>&1 || useradd --system --user-group --home-dir /var/lib/tg-relay --shell /usr/sbin/nologin tg-relay
 go build -trimpath -ldflags '-X main.buildVersion=v0.0.1' -o /opt/tg-relay/tg-relay .
+cp /opt/tg-relay/tg-relay "$fixture/original-core"
 install -m 0755 install.sh /opt/tg-relay/manage.sh
 install -m 0644 LICENSE.mtg THIRD_PARTY_NOTICES.md /opt/tg-relay/
 install -m 0644 deploy/tg-relay*.service deploy/tg-relay*.timer deploy/tg-relay*.path /etc/systemd/system/
@@ -84,3 +85,53 @@ assert a['config']==b['config'] and a['usage']==b['usage'],'Configuration, secre
 PY
 systemctl is-active --quiet tg-relay.service
 printf 'Real release update via API/systemd passed; port, account, credentials, routes and usage preserved.\n'
+
+# Exercise terminal recovery with real published files and real systemd, then a successful retry.
+kill "$menu_pid" >/dev/null 2>&1 || true
+wait "$menu_pid" 2>/dev/null || true
+menu_pid=
+systemctl stop tg-relay.service
+install -m 0755 "$fixture/original-core" /opt/tg-relay/tg-relay
+printf 'v0.0.1\n' > /opt/tg-relay/version
+systemctl start tg-relay.service
+sha256sum /opt/tg-relay/tg-relay /opt/tg-relay/manage.sh /opt/tg-relay/version /etc/systemd/system/tg-relay* > "$fixture/installed-sha256"
+set +e
+(
+    set -Eeuo pipefail
+    source ./install.sh
+    trap cleanup EXIT
+    VERSION=$target
+    acquire_install_lock
+    curl() {
+        if [[ ${!#} == https://panel.example.com:18765/api/auth && $(/opt/tg-relay/tg-relay -version) == "$target" ]]; then
+            printf '{"version":"%s","ready":false}\n' "$target"
+            return
+        fi
+        command curl "$@"
+    }
+    install_release
+)
+terminal_status=$?
+set -e
+[[ $terminal_status != 0 && $(/opt/tg-relay/tg-relay -version) == v0.0.1 ]]
+sha256sum -c "$fixture/installed-sha256"
+curl -fsS https://panel.example.com:18765/api/auth | python3 -c 'import json,sys;a=json.load(sys.stdin);assert a["ready"] and a["version"]=="v0.0.1",a'
+(
+    source ./install.sh
+    trap cleanup EXIT
+    VERSION=$target
+    acquire_install_lock
+    curl() { command curl "$@"; }
+    install_release
+)
+[[ $(/opt/tg-relay/tg-relay -version) == "$target" ]]
+cmp /etc/tg-relay/panel.conf "$fixture/panel.conf"
+sha256sum -c "$fixture/cert-sha256"
+curl -fsS -c "$fixture/cookies" -H 'Content-Type: application/json' -d '{"username":"update-test","password":"123456"}' https://panel.example.com:18765/api/login
+curl -fsS -b "$fixture/cookies" https://panel.example.com:18765/api/backup > "$fixture/terminal-after.json"
+python3 - "$fixture/before.json" "$fixture/terminal-after.json" <<'PY'
+import json,sys
+a,b=[json.load(open(p)) for p in sys.argv[1:]]
+assert a['config']==b['config'] and a['usage']==b['usage'],'Terminal update changed data'
+PY
+printf 'Real terminal update rollback and retry passed; original files, HTTPS, account and proxy data preserved.\n'
