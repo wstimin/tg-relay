@@ -196,4 +196,4 @@ main() {
         *) die '无效操作';;
     esac
 }
-if [[ ${BASH_SOURCE[0]} == "$0" ]]; then main "$@"; fi
+if [[ ${BASH_SOURCE[0]:-$0} == "$0" ]]; then main "$@"; fi

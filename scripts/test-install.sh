@@ -3,6 +3,11 @@ set -Eeuo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 source ./install.sh
 
+# Both file execution and curl | bash must enter main; sourcing above must not.
+file_help=$(bash ./install.sh --help)
+stdin_help=$(bash -s -- --help < ./install.sh)
+[[ -n $file_help && $stdin_help == "$file_help" ]]
+
 for value in 1 80 443 8765 65535 0080; do valid_port "$value" || exit 1; done
 for value in 0 65536 -1 abc '80;id' '1 2' 999999999; do
     if valid_port "$value"; then printf 'Invalid port accepted: %s\n' "$value"; exit 1; fi
