@@ -437,6 +437,17 @@ func (e *Engine) snapshot() map[string]any {
 	return state
 }
 
+func (e *Engine) ready() bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	for _, n := range e.s.config.Load().Inbounds {
+		if n.Enabled && e.listeners[n.ID] == nil {
+			return false
+		}
+	}
+	return !e.closing
+}
+
 // Seed addresses follow Telegram Desktop / mtg. Negative identifiers retain media intent in the handshake.
 func dcAddresses(dc int) []string {
 	if dc < 0 {

@@ -50,16 +50,18 @@ type loginAttempt struct {
 	AdminHash [32]byte
 }
 type API struct {
-	s            *Service
-	mu           sync.Mutex
-	sessions     map[[32]byte]loginSession
-	attempts     map[string]loginAttempt
-	adminHost    string
-	secureCookie bool
+	s             *Service
+	mu            sync.Mutex
+	sessions      map[[32]byte]loginSession
+	attempts      map[string]loginAttempt
+	adminHost     string
+	secureCookie  bool
+	updater       *panelUpdater
+	entryDefaults *inboundDefaults
 }
 
 func newAPI(s *Service, host string, secure bool) *API {
-	return &API{s: s, sessions: map[[32]byte]loginSession{}, attempts: map[string]loginAttempt{}, adminHost: host, secureCookie: secure}
+	return &API{s: s, sessions: map[[32]byte]loginSession{}, attempts: map[string]loginAttempt{}, adminHost: host, secureCookie: secure, updater: newPanelUpdater("", false)}
 }
 func sendJSON(w http.ResponseWriter, status int, value any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
@@ -127,7 +129,7 @@ func (a *API) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			fail(w, 405, "请求方式不支持")
 			return
 		}
-		sendJSON(w, 200, map[string]bool{"initialized": a.s.store.hasAdmin(), "authenticated": a.authenticated(r)})
+		sendJSON(w, 200, map[string]any{"initialized": a.s.store.hasAdmin(), "authenticated": a.authenticated(r), "version": buildVersion, "ready": a.s.engine.ready()})
 		return
 	case "/api/setup":
 		a.setup(w, r)
@@ -138,6 +140,10 @@ func (a *API) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if !a.authenticated(r) {
 		fail(w, 401, "请先登录管理面板")
+		return
+	}
+	if strings.HasPrefix(r.URL.Path, "/api/update") {
+		a.serveUpdate(w, r)
 		return
 	}
 	if r.URL.Path == "/api/logout" {
@@ -157,6 +163,19 @@ func (a *API) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if r.URL.Path == "/api/state" && r.Method == http.MethodGet {
 		a.state(w)
+		return
+	}
+	if r.URL.Path == "/api/inbound-defaults" && r.Method == http.MethodGet {
+		if a.entryDefaults == nil {
+			fail(w, 503, "自动识别暂不可用，请手动填写服务器公网地址")
+			return
+		}
+		host, source, err := a.entryDefaults.detect(r.Context(), a.s.config.Load(), a.adminHost)
+		if err != nil {
+			fail(w, 503, err.Error())
+			return
+		}
+		sendJSON(w, 200, map[string]string{"host": host, "source": source})
 		return
 	}
 	parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/api/"), "/")
@@ -250,7 +269,8 @@ func (a *API) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if len(parts) == 1 && parts[0] == "settings" && r.Method == http.MethodPatch {
-		var settings Settings
+		current := a.s.config.Load().Settings
+		settings := Settings{Workspace: current.Workspace, TLSDomains: append([]string(nil), current.TLSDomains...)}
 		if err := readJSON(r, &settings); err != nil {
 			failChange(w, err)
 			return
@@ -452,7 +472,7 @@ func (a *API) state(w http.ResponseWriter) {
 	a.s.usageMu.Lock()
 	up, down, persistErr := a.s.rateUp, a.s.rateDown, a.s.persistError
 	a.s.usageMu.Unlock()
-	result := map[string]any{"config": public, "usage": a.s.usageSnapshot(), "nodes": a.s.engine.snapshot(), "health": health, "events": events, "uploadRate": up, "downloadRate": down, "persistenceError": persistErr, "uptimeSeconds": int64(time.Since(a.s.started).Seconds())}
+	result := map[string]any{"version": buildVersion, "config": public, "usage": a.s.usageSnapshot(), "nodes": a.s.engine.snapshot(), "health": health, "events": events, "uploadRate": up, "downloadRate": down, "persistenceError": persistErr, "uptimeSeconds": int64(time.Since(a.s.started).Seconds())}
 	a.s.updateMu.Unlock()
 	sendJSON(w, 200, result)
 }

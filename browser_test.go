@@ -27,6 +27,7 @@ func TestBrowserHarness(t *testing.T) {
 		t.Fatal(err)
 	}
 	a := newAPI(s, "", false)
+	a.entryDefaults = &inboundDefaults{lookup: func(context.Context) (string, error) { return "203.0.113.10", nil }}
 	setup := requestAPI(a, "POST", "/api/setup", `{"username":"admin","password":"test-password-12345"}`, nil)
 	if setup.Code != 200 {
 		t.Fatal(setup.Body.String())

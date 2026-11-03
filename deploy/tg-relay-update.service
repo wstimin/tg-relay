@@ -1,0 +1,11 @@
+[Unit]
+Description=Apply administrator-confirmed TG Relay release update
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/usr/bin/flock -w 300 /run/tg-relay-install.lock /opt/tg-relay/tg-relay -apply-update
+TimeoutStartSec=660
+UMask=0077

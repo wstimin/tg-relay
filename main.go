@@ -27,6 +27,9 @@ func main() {
 }
 
 func run() error {
+	showVersion := flag.Bool("version", false, "显示实际构建版本并退出")
+	applyUpdate := flag.Bool("apply-update", false, "由 systemd 更新服务应用已确认的正式更新")
+	managedUpdates := flag.Bool("managed-updates", false, "允许已安装的 systemd 更新服务处理面板更新请求")
 	listen := flag.String("listen", "127.0.0.1:8765", "管理面板监听地址")
 	dataDir := flag.String("data", "data", "SQLite 数据目录")
 	adminHost := flag.String("admin-host", "", "允许访问管理面板的额外主机名，例如 panel.example.com")
@@ -40,6 +43,13 @@ func run() error {
 	tlsCert := flag.String("tls-cert", "", "面板 HTTPS PEM 证书路径，与 -tls-key 一起使用")
 	tlsKey := flag.String("tls-key", "", "面板 HTTPS 私钥路径")
 	flag.Parse()
+	if *showVersion {
+		fmt.Println(buildVersion)
+		return nil
+	}
+	if *applyUpdate {
+		return applyManagedUpdate()
+	}
 	adminCommands := 0
 	for _, enabled := range []bool{*initAdmin, *resetAdmin, *verifyAdmin, *adminStatus, *showAdmin} {
 		if enabled {
@@ -107,6 +117,8 @@ func run() error {
 		return err
 	}
 	api := newAPI(service, *adminHost, *secureCookie)
+	api.updater = newPanelUpdater(*dataDir, *managedUpdates)
+	api.entryDefaults = &inboundDefaults{lookup: lookupPublicIP}
 	web, _ := fs.Sub(assets, "web")
 	files := http.FileServer(http.FS(web))
 	mux := http.NewServeMux()
@@ -128,7 +140,7 @@ func run() error {
 		if tlsConfig != nil {
 			scheme = "https"
 		}
-		log.Printf("TG Relay: %s://%s", scheme, *listen)
+		log.Printf("TG Relay %s: %s://%s", buildVersion, scheme, *listen)
 		var err error
 		if tlsConfig == nil {
 			err = server.Serve(listener)

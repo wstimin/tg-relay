@@ -21,22 +21,32 @@ jobs:
         with:
           go-version-file: go.mod
       - run: go test -race ./... && go vet ./...
-      - run: bash -n install.sh && bash scripts/test-install.sh && shellcheck install.sh scripts/test-install.sh scripts/test-admin.sh
+      - run: bash -n install.sh && bash scripts/test-install.sh && shellcheck install.sh scripts/test-install.sh scripts/test-admin.sh scripts/test-update.sh
       - name: Build release archives
+        env:
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
         shell: bash
         run: |
+          [[ $RELEASE_TAG =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
           mkdir -p release
           for arch in amd64 arm64; do
             mkdir -p ".cache/package-$arch"
-            CGO_ENABLED=0 GOOS=linux GOARCH="$arch" go build -trimpath -ldflags '-s -w' -o ".cache/package-$arch/tg-relay" .
-            if [[ $arch == amd64 ]]; then bash scripts/test-admin.sh ".cache/package-$arch/tg-relay"; fi
-            cp deploy/tg-relay.service deploy/tg-relay-renew.service deploy/tg-relay-renew.timer install.sh LICENSE.mtg THIRD_PARTY_NOTICES.md ".cache/package-$arch/"
-            tar -czf "release/tg-relay-linux-$arch.tar.gz" -C ".cache/package-$arch" tg-relay tg-relay.service tg-relay-renew.service tg-relay-renew.timer install.sh LICENSE.mtg THIRD_PARTY_NOTICES.md
+            CGO_ENABLED=0 GOOS=linux GOARCH="$arch" go build -trimpath -ldflags "-s -w -X main.buildVersion=$RELEASE_TAG" -o ".cache/package-$arch/tg-relay" .
+            if [[ $arch == amd64 ]]; then
+              [[ $(".cache/package-$arch/tg-relay" -version) == "$RELEASE_TAG" ]]
+              bash scripts/test-admin.sh ".cache/package-$arch/tg-relay"
+            fi
+            cp deploy/tg-relay.service deploy/tg-relay-renew.service deploy/tg-relay-renew.timer deploy/tg-relay-update.service deploy/tg-relay-update.path install.sh LICENSE.mtg THIRD_PARTY_NOTICES.md ".cache/package-$arch/"
+            tar -czf "release/tg-relay-linux-$arch.tar.gz" -C ".cache/package-$arch" tg-relay tg-relay.service tg-relay-renew.service tg-relay-renew.timer tg-relay-update.service tg-relay-update.path install.sh LICENSE.mtg THIRD_PARTY_NOTICES.md
           done
-          CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -ldflags '-s -w' -o release/tg-relay-windows-amd64.exe .
+          CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "-s -w -X main.buildVersion=$RELEASE_TAG" -o release/tg-relay-windows-amd64.exe .
           cd release && sha256sum tg-relay-* > SHA256SUMS
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
         run: gh release create "$RELEASE_TAG" release/* --verify-tag --title "TG Relay $RELEASE_TAG" --generate-notes
+      - name: Exercise real published update on disposable runner
+        env:
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+        run: sudo env "PATH=$PATH" "GOCACHE=$HOME/.cache/go-build" "GOMODCACHE=$(go env GOMODCACHE)" TG_RELAY_DISPOSABLE_RUNNER=yes bash scripts/test-update.sh "$RELEASE_TAG"

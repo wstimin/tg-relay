@@ -57,7 +57,8 @@ type Credential struct {
 	Enabled   bool   `json:"enabled"`
 }
 type Settings struct {
-	Workspace string `json:"workspace"`
+	Workspace  string   `json:"workspace"`
+	TLSDomains []string `json:"tlsDomains"`
 }
 type Config struct {
 	Revision    int64        `json:"revision"`
@@ -288,6 +289,17 @@ func validateConfig(c *Config) error {
 	}
 	if strings.TrimSpace(c.Settings.Workspace) == "" || len([]rune(c.Settings.Workspace)) > 40 {
 		return errors.New("工作空间名称无效")
+	}
+	if len(c.Settings.TLSDomains) > 32 {
+		return errors.New("伪装域名预设最多 32 个")
+	}
+	seenDomains := map[string]bool{}
+	for _, domain := range c.Settings.TLSDomains {
+		key := strings.ToLower(domain)
+		if !validHost(domain) || net.ParseIP(domain) != nil || !strings.Contains(domain, ".") || seenDomains[key] {
+			return errors.New("伪装域名预设必须为不重复的完整域名，不能带协议、端口或填写 IP")
+		}
+		seenDomains[key] = true
 	}
 	return nil
 }

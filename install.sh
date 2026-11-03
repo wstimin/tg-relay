@@ -199,10 +199,14 @@ wait_panel() {
 }
 reset_admin_credentials() {
     require_installed
-    ADMIN_USER=$("$INSTALL_DIR/tg-relay" -admin-username -data "$DATA_DIR") || die '请先选择 1 更新程序'
+    local action=-reset-admin status
+    status=$("$INSTALL_DIR/tg-relay" -admin-status -data "$DATA_DIR") || die '无法读取管理员状态，请检查数据目录'
+    if [[ $status == uninitialized ]]; then ADMIN_USER='admin'; action=-init-admin;
+    elif [[ $status == initialized ]]; then ADMIN_USER=$("$INSTALL_DIR/tg-relay" -admin-username -data "$DATA_DIR");
+    else die '管理员状态无效，请检查数据目录'; fi
     printf '当前管理员：%s；新密码保存后旧管理会话立即失效，TG 代理配置不变。\n' "$ADMIN_USER" >&3
     read_admin
-    printf '%s' "$ADMIN_PASSWORD" | "$INSTALL_DIR/tg-relay" -reset-admin -admin-user "$ADMIN_USER" -data "$DATA_DIR"
+    printf '%s' "$ADMIN_PASSWORD" | "$INSTALL_DIR/tg-relay" "$action" -admin-user "$ADMIN_USER" -data "$DATA_DIR"
     printf '%s' "$ADMIN_PASSWORD" | "$INSTALL_DIR/tg-relay" -verify-admin -admin-user "$ADMIN_USER" -data "$DATA_DIR"
     unset ADMIN_PASSWORD
     printf '账号密码已重置并校验。用户名：%s；请使用新密码登录。\n' "$ADMIN_USER"
@@ -391,7 +395,8 @@ certificate_menu() {
     esac
 }
 install_release() {
-    local arch asset release_url status active=0 admin_action='' keep_admin
+    local arch asset release_url status active=0 admin_action='' existing=0
+    [[ ! -x $INSTALL_DIR/tg-relay ]] || existing=1
     arch=$(architecture "$(uname -m)") || die '仅支持 Linux amd64 / arm64'
     if [[ -z $VERSION ]]; then
         release_url=$(download --output /dev/null --write-out '%{url_effective}' "https://github.com/$REPOSITORY/releases/latest")
@@ -404,24 +409,29 @@ install_release() {
     download --output "$WORK_DIR/$asset" "https://github.com/$REPOSITORY/releases/download/$VERSION/$asset"
     download --output "$WORK_DIR/SHA256SUMS" "https://github.com/$REPOSITORY/releases/download/$VERSION/SHA256SUMS"
     verify_archive "$asset"
-    tar --extract --gzip --file "$WORK_DIR/$asset" --directory "$WORK_DIR" --no-same-owner tg-relay tg-relay.service install.sh tg-relay-renew.service tg-relay-renew.timer LICENSE.mtg THIRD_PARTY_NOTICES.md
+    tar --extract --gzip --file "$WORK_DIR/$asset" --directory "$WORK_DIR" --no-same-owner tg-relay tg-relay.service install.sh tg-relay-renew.service tg-relay-renew.timer tg-relay-update.service tg-relay-update.path LICENSE.mtg THIRD_PARTY_NOTICES.md
     [[ -f $WORK_DIR/tg-relay && ! -L $WORK_DIR/tg-relay && -f $WORK_DIR/tg-relay.service && ! -L $WORK_DIR/tg-relay.service ]] || die '发布包内容无效'
     chmod 0755 "$WORK_DIR/tg-relay"
     read_configuration
-    configure_panel
+    if ((existing)); then
+        [[ -f $CONFIG_DIR/panel.conf ]] || die '已有程序缺少面板配置，请通过菜单 3 修复后更新'
+        PANEL_PORT=${LISTEN##*:}
+        valid_port "$PANEL_PORT" || die '已有面板端口无效，请通过菜单 3 修复'
+        printf '检测到已有安装：保留端口、访问方式、管理员、证书和全部代理数据，直接更新。\n'
+    else
+        configure_panel
+    fi
     install -d -m 0700 "$DATA_DIR"
     install -d -m 0750 "$CONFIG_DIR"
     status=$("$WORK_DIR/tg-relay" -admin-status -data "$DATA_DIR")
     [[ $status == initialized || $status == uninitialized ]] || die '无法读取管理员状态'
     ADMIN_USER=
     if [[ $status == uninitialized ]]; then
+        ((existing == 0)) || die '已有安装缺少管理员，请通过菜单 4 单独恢复账号；更新不会询问或重置凭据'
         admin_action=-init-admin
         read_admin
     else
         ADMIN_USER=$("$WORK_DIR/tg-relay" -admin-username -data "$DATA_DIR")
-        printf '当前管理员用户名：%s\n' "$ADMIN_USER" >&3
-        ask keep_admin '管理员账号：1 保留，2 重新设置账号和密码' 1
-        case "$keep_admin" in 1) ;; 2) admin_action=-reset-admin; read_admin;; *) die '请选择 1 或 2';; esac
     fi
     systemctl is-active --quiet tg-relay.service && active=1
     if ((active)); then systemctl stop tg-relay.service; RESTART_ON_ERROR=1; fi
@@ -440,14 +450,17 @@ install_release() {
     install -m 0755 "$WORK_DIR/install.sh" "$INSTALL_DIR/manage.sh"
     install -d -m 0755 "$(dirname "$MENU_COMMAND")"
     if [[ ! -L $MENU_COMMAND ]]; then ln -s "$INSTALL_DIR/manage.sh" "$MENU_COMMAND"; fi
-    install -m 0644 "$WORK_DIR/tg-relay-renew.service" "$WORK_DIR/tg-relay-renew.timer" /etc/systemd/system/
-    if [[ -n $TLS_CERT ]]; then activate_certificate; fi
-    write_configuration
+    install -m 0644 "$WORK_DIR/tg-relay-renew.service" "$WORK_DIR/tg-relay-renew.timer" "$WORK_DIR/tg-relay-update.service" "$WORK_DIR/tg-relay-update.path" /etc/systemd/system/
+    if ((existing == 0)); then
+        if [[ -n $TLS_CERT ]]; then activate_certificate; fi
+        write_configuration
+    fi
     printf '%s\n' "$VERSION" > "$INSTALL_DIR/version"
     chown -R tg-relay:tg-relay "$DATA_DIR"
     chown root:tg-relay "$CONFIG_DIR"
-    if [[ -n $TLS_CERT ]]; then certificate_deploy; configure_renewal; fi
+    if ((existing == 0)) && [[ -n $TLS_CERT ]]; then certificate_deploy; configure_renewal; fi
     systemctl daemon-reload
+    systemctl enable --now tg-relay-update.path
     systemctl enable tg-relay.service
     systemctl restart tg-relay.service
     RESTART_ON_ERROR=0
@@ -461,12 +474,14 @@ install_release() {
 }
 uninstall() {
     local answer
+    if systemctl is-active --quiet tg-relay-update.service; then die '更新任务正在运行，请完成后再卸载'; fi
     ask answer '停止并删除程序与面板配置，保留数据；输入 UNINSTALL 确认' no
     [[ $answer == UNINSTALL ]] || die '已取消'
+    systemctl disable --now tg-relay-update.path || true
     systemctl disable --now tg-relay.service || true
     systemctl disable --now tg-relay-renew.timer || true
-    rm -f -- "$UNIT" "$INSTALL_DIR/tg-relay" "$INSTALL_DIR/version" "$INSTALL_DIR/LICENSE.mtg" "$INSTALL_DIR/THIRD_PARTY_NOTICES.md" "$CONFIG_DIR/panel.conf"
-    rm -f -- "$INSTALL_DIR/manage.sh" "$MENU_COMMAND" /etc/systemd/system/tg-relay-renew.service /etc/systemd/system/tg-relay-renew.timer
+    rm -f -- "$UNIT" "$INSTALL_DIR/tg-relay" "$INSTALL_DIR/version" "$INSTALL_DIR/LICENSE.mtg" "$INSTALL_DIR/THIRD_PARTY_NOTICES.md" "$CONFIG_DIR/panel.conf" "$DATA_DIR/update-request" "$DATA_DIR/update-status.json"
+    rm -f -- "$INSTALL_DIR/manage.sh" "$MENU_COMMAND" /etc/systemd/system/tg-relay-renew.service /etc/systemd/system/tg-relay-renew.timer /etc/systemd/system/tg-relay-update.service /etc/systemd/system/tg-relay-update.path
     rmdir -- "$INSTALL_DIR" "$CONFIG_DIR" 2>/dev/null || true
     systemctl daemon-reload
     printf '程序已卸载，数据及系统用户保留：%s\n' "$DATA_DIR"

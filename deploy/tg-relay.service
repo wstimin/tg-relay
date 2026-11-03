@@ -10,7 +10,7 @@ WorkingDirectory=/var/lib/tg-relay
 Environment=TG_RELAY_LISTEN=127.0.0.1:8765 TG_RELAY_ADMIN_HOST=localhost TG_RELAY_SECURE_COOKIE=false
 Environment=TG_RELAY_TLS_CERT= TG_RELAY_TLS_KEY=
 EnvironmentFile=-/etc/tg-relay/panel.conf
-ExecStart=/opt/tg-relay/tg-relay -listen ${TG_RELAY_LISTEN} -data /var/lib/tg-relay -admin-host ${TG_RELAY_ADMIN_HOST} -secure-cookie=${TG_RELAY_SECURE_COOKIE} -tls-cert=${TG_RELAY_TLS_CERT} -tls-key=${TG_RELAY_TLS_KEY}
+ExecStart=/opt/tg-relay/tg-relay -managed-updates -listen ${TG_RELAY_LISTEN} -data /var/lib/tg-relay -admin-host ${TG_RELAY_ADMIN_HOST} -secure-cookie=${TG_RELAY_SECURE_COOKIE} -tls-cert=${TG_RELAY_TLS_CERT} -tls-key=${TG_RELAY_TLS_KEY}
 Restart=on-failure
 RestartSec=3
 TimeoutStopSec=30

@@ -1,0 +1,9 @@
+[Unit]
+Description=Watch administrator-confirmed TG Relay update requests
+
+[Path]
+PathExists=/var/lib/tg-relay/update-request
+Unit=tg-relay-update.service
+
+[Install]
+WantedBy=multi-user.target

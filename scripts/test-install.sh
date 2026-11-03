@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Mocks are called indirectly; each subshell establishes its own configuration.
+# shellcheck disable=SC2030,SC2031,SC2329
 set -Eeuo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 source ./install.sh
@@ -107,5 +109,48 @@ http://panel.example.com:9000
 panel.example.com
 INPUT
     [[ $ADMIN_HOST == panel.example.com ]]
+)
+(
+    # An existing installation must never call any settings/password prompt.
+    fixture=$(mktemp -d)
+    trap 'rm -rf -- "$fixture"; if [[ -n $WORK_DIR && $WORK_DIR == /tmp/tg-relay.* ]]; then rm -rf -- "$WORK_DIR"; fi' EXIT
+    INSTALL_DIR=$fixture/installed DATA_DIR=$fixture/data CONFIG_DIR=$fixture/config UNIT=$fixture/main.service MENU_COMMAND=$fixture/tg
+    mkdir -p "$INSTALL_DIR" "$DATA_DIR" "$CONFIG_DIR" "$fixture/package"
+    cat > "$fixture/package/tg-relay" <<'MOCK'
+#!/usr/bin/env bash
+case "$1" in -admin-status) printf initialized;; -admin-username) printf retained-admin;; *) exit 1;; esac
+MOCK
+    chmod +x "$fixture/package/tg-relay"
+    cp "$fixture/package/tg-relay" "$INSTALL_DIR/tg-relay"
+    cp install.sh LICENSE.mtg THIRD_PARTY_NOTICES.md deploy/tg-relay.service deploy/tg-relay-renew.service deploy/tg-relay-renew.timer deploy/tg-relay-update.service deploy/tg-relay-update.path "$fixture/package/"
+    tar -czf "$fixture/asset.tar.gz" -C "$fixture/package" .
+    printf 'TG_RELAY_LISTEN=0.0.0.0:9443\nTG_RELAY_ADMIN_HOST=panel.example.com\nTG_RELAY_SECURE_COOKIE=true\nTG_RELAY_TLS_CERT=/existing/cert.pem\nTG_RELAY_TLS_KEY=/existing/key.pem\n' > "$CONFIG_DIR/panel.conf"
+    before=$(sha256sum "$CONFIG_DIR/panel.conf")
+    VERSION=v0.4.0
+    configure_panel() { printf 'Unexpected panel prompt\n' >&2; exit 1; }
+    read_admin() { printf 'Unexpected credential prompt\n' >&2; exit 1; }
+    ask() { printf 'Unexpected prompt\n' >&2; exit 1; }
+    write_configuration() { printf 'Unexpected config rewrite\n' >&2; exit 1; }
+    certificate_deploy() { exit 1; }
+    configure_renewal() { exit 1; }
+    systemctl() { return 0; }
+    ss() { return 0; }
+    id() { return 0; }
+    install() { return 0; }
+    ln() { return 0; }
+    chown() { return 0; }
+    wait_panel() { return 0; }
+    show_panel() { return 0; }
+    download() {
+        if [[ $3 == */SHA256SUMS ]]; then
+            local sum
+            sum=$(sha256sum "$fixture/asset.tar.gz"); sum=${sum%% *}
+            printf '%s  tg-relay-linux-%s.tar.gz\n' "$sum" "$(architecture "$(uname -m)")" > "$2"
+        else cp "$fixture/asset.tar.gz" "$2"; fi
+    }
+    # Package paths match real release archives (without a leading ./).
+    tar -czf "$fixture/asset.tar.gz" -C "$fixture/package" tg-relay tg-relay.service install.sh tg-relay-renew.service tg-relay-renew.timer tg-relay-update.service tg-relay-update.path LICENSE.mtg THIRD_PARTY_NOTICES.md
+    install_release
+    [[ $(sha256sum "$CONFIG_DIR/panel.conf") == "$before" && $ADMIN_USER == retained-admin && $LISTEN == 0.0.0.0:9443 && $TLS_CERT == /existing/cert.pem ]]
 )
 printf 'Installer input, config parsing and checksum checks passed.\n'

@@ -16,8 +16,8 @@ jobs:
       - run: go test -race ./...
       - run: go vet ./...
       - run: node --check web/app.mjs && node --check web/theme.js && node --check web/icons.mjs
-      - run: bash -n install.sh scripts/test-install.sh && bash scripts/test-install.sh
-      - run: shellcheck install.sh scripts/test-install.sh scripts/test-admin.sh
+      - run: bash -n install.sh scripts/test-install.sh scripts/test-update.sh && bash scripts/test-install.sh
+      - run: shellcheck install.sh scripts/test-install.sh scripts/test-admin.sh scripts/test-update.sh
       - name: Verify systemd unit
         run: |
           go build -o .cache/verify/tg-relay .
@@ -26,4 +26,4 @@ jobs:
           sudo useradd --system tg-relay
           sudo install -d /var/lib/tg-relay
           sudo install -m 0755 install.sh /opt/tg-relay/manage.sh
-          systemd-analyze verify deploy/tg-relay.service deploy/tg-relay-renew.service deploy/tg-relay-renew.timer
+          systemd-analyze verify deploy/tg-relay.service deploy/tg-relay-renew.service deploy/tg-relay-renew.timer deploy/tg-relay-update.service deploy/tg-relay-update.path
