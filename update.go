@@ -74,7 +74,7 @@ func updateClient(timeout time.Duration) *http.Client {
 	}}
 }
 
-func downloadUpdate(ctx context.Context, client *http.Client, address string, limit int64) ([]byte, error) {
+func downloadUpdate(ctx context.Context, client *http.Client, address string, limit int64, progress func(int64, int64)) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, address, nil)
 	if err != nil {
 		return nil, err
@@ -88,18 +88,34 @@ func downloadUpdate(ctx context.Context, client *http.Client, address string, li
 	if response.StatusCode != 200 {
 		return nil, fmt.Errorf("GitHub 更新源返回 HTTP %d，请稍后重试", response.StatusCode)
 	}
-	data, err := io.ReadAll(io.LimitReader(response.Body, limit+1))
-	if err != nil {
-		return nil, err
-	}
-	if int64(len(data)) > limit {
+	if response.ContentLength > limit {
 		return nil, errors.New("更新文件超过大小限制")
 	}
-	return data, nil
+	reader := io.LimitReader(response.Body, limit+1)
+	var data []byte
+	buffer := make([]byte, 32<<10)
+	last := time.Time{}
+	for {
+		n, readErr := reader.Read(buffer)
+		data = append(data, buffer[:n]...)
+		if int64(len(data)) > limit {
+			return nil, errors.New("更新文件超过大小限制")
+		}
+		if progress != nil && (time.Since(last) >= 250*time.Millisecond || readErr == io.EOF) {
+			progress(int64(len(data)), max(response.ContentLength, 0))
+			last = time.Now()
+		}
+		if readErr == io.EOF {
+			return data, nil
+		}
+		if readErr != nil {
+			return nil, readErr
+		}
+	}
 }
 
 func latestRelease(ctx context.Context) (releaseInfo, error) {
-	data, err := downloadUpdate(ctx, updateClient(12*time.Second), "https://api.github.com/repos/wstimin/tg-relay/releases/latest", 1<<20)
+	data, err := downloadUpdate(ctx, updateClient(12*time.Second), "https://api.github.com/repos/wstimin/tg-relay/releases/latest", 1<<20, nil)
 	if err != nil {
 		return releaseInfo{}, err
 	}
@@ -114,10 +130,12 @@ func latestRelease(ctx context.Context) (releaseInfo, error) {
 }
 
 type updateProgress struct {
-	Phase   string    `json:"phase"`
-	Target  string    `json:"target"`
-	Message string    `json:"message"`
-	At      time.Time `json:"at"`
+	Phase      string    `json:"phase"`
+	Target     string    `json:"target"`
+	Message    string    `json:"message"`
+	At         time.Time `json:"at"`
+	Downloaded int64     `json:"downloaded,omitempty"`
+	Total      int64     `json:"total,omitempty"`
 }
 type panelUpdater struct {
 	mu         sync.Mutex
@@ -126,11 +144,24 @@ type panelUpdater struct {
 	release    releaseInfo
 	checked    time.Time
 	checkError string
+	reason     string
 	fetch      func(context.Context) (releaseInfo, error)
 }
 
 func newPanelUpdater(dir string, enabled bool) *panelUpdater {
-	return &panelUpdater{dir: dir, enabled: enabled && runtime.GOOS == "linux" && (runtime.GOARCH == "amd64" || runtime.GOARCH == "arm64") && dir == managedDataDir, fetch: latestRelease}
+	if dir != "" {
+		dir = filepath.Clean(dir)
+	}
+	reason := ""
+	switch {
+	case runtime.GOOS != "linux" || (runtime.GOARCH != "amd64" && runtime.GOARCH != "arm64"):
+		reason = "当前平台不支持 systemd 一键更新，请使用对应平台的发布包。"
+	case !enabled:
+		reason = "当前服务未启用 -managed-updates，通常是旧 systemd 服务文件未更新。请运行最新安装脚本，选择 1 修复更新组件，保留原配置。"
+	case dir != managedDataDir:
+		reason = "数据目录不是 /var/lib/tg-relay，无法使用托管更新；请核对 systemd 启动参数。"
+	}
+	return &panelUpdater{dir: dir, enabled: reason == "", reason: reason, fetch: latestRelease}
 }
 func (u *panelUpdater) progress() updateProgress {
 	var status updateProgress
@@ -149,7 +180,7 @@ func (u *panelUpdater) progress() updateProgress {
 	return status
 }
 func updateActive(p updateProgress) bool {
-	return (p.Phase == "queued" || p.Phase == "downloading" || p.Phase == "installing") && time.Since(p.At) < 10*time.Minute
+	return (p.Phase == "queued" || p.Phase == "downloading" || p.Phase == "verifying" || p.Phase == "installing" || p.Phase == "restarting" || p.Phase == "validating") && time.Since(p.At) < 10*time.Minute
 }
 func (a *API) serveUpdate(w http.ResponseWriter, r *http.Request) {
 	u := a.updater
@@ -212,7 +243,10 @@ func (a *API) serveUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 	reason := ""
 	if !u.enabled {
-		reason = "一键更新仅支持通过新版安装器部署的 Linux systemd 服务；手动部署请使用 tg 或手动替换程序。"
+		reason = u.reason
+		if reason == "" {
+			reason = "一键更新未启用，请运行最新安装脚本并选择 1 修复更新组件，保留原配置。"
+		}
 	}
 	if buildVersion == "dev" {
 		reason = "当前为本地开发构建，请通过正式发布包安装后使用一键更新。"
@@ -436,11 +470,14 @@ func applyManagedUpdate() (result error) {
 	}
 	base := releaseRepository + "/releases/download/" + target + "/"
 	client := updateClient(150 * time.Second)
-	archive, err := downloadUpdate(ctx, client, base+asset, 32<<20)
+	archive, err := downloadUpdate(ctx, client, base+asset, 32<<20, func(downloaded, total int64) {
+		_ = writeUpdateStatus(managedDataDir, updateProgress{Phase: "downloading", Target: target, Message: "正在下载安装包，当前 TG 服务继续运行", At: time.Now().UTC(), Downloaded: downloaded, Total: total})
+	})
 	if err != nil {
 		return err
 	}
-	sums, err := downloadUpdate(ctx, client, base+"SHA256SUMS", 16384)
+	progress("verifying", "安装包下载完成，正在校验 SHA256、文件内容和程序版本")
+	sums, err := downloadUpdate(ctx, client, base+"SHA256SUMS", 16384, nil)
 	if err != nil {
 		return err
 	}
@@ -481,11 +518,13 @@ func applyManagedUpdate() (result error) {
 		return err
 	}
 	err = replaceUpdateFiles(files, previous, func() error {
+		progress("restarting", "正在启动服务，页面会自动等待恢复；TG 链接不变")
 		if err := runSystemctl("daemon-reload"); err != nil {
 			return err
 		}
 		return runSystemctl("restart", "tg-relay.service")
 	}, func() error {
+		progress("validating", "服务已启动，正在确认版本、面板响应和入站监听")
 		if err := waitUpdatedPanel(target); err != nil {
 			return err
 		}

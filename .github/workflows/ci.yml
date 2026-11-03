@@ -16,6 +16,7 @@ jobs:
       - run: go test -race ./...
       - run: go vet ./...
       - run: node --check web/app.mjs && node --check web/theme.js && node --check web/icons.mjs
+      - run: node scripts/test-web-update.mjs
       - run: bash -n install.sh scripts/test-install.sh scripts/test-update.sh && bash scripts/test-install.sh
       - run: shellcheck install.sh scripts/test-install.sh scripts/test-admin.sh scripts/test-update.sh
       - name: Verify systemd unit

@@ -11,6 +11,7 @@ ACME_HOME=/etc/tg-relay/acme
 WORK_DIR=
 RESTART_ON_ERROR=0
 VERSION=
+LOCK_FILE=/run/tg-relay-install.lock
 PENDING_CERT_DOMAIN=
 
 die() { printf '错误：%s\n' "$*" >&2; exit 1; }
@@ -52,7 +53,8 @@ valid_version() { [[ $1 =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; }
 architecture() {
     case "$1" in x86_64|amd64) printf amd64;; aarch64|arm64) printf arm64;; *) return 1;; esac
 }
-download() { curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' --connect-timeout 15 --max-time 300 --retry 2 "$@"; }
+download() { curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' --connect-timeout 10 --max-time 120 --retry 1 --retry-max-time 180 "$@"; }
+acquire_install_lock() { exec 9>"$LOCK_FILE"; flock -n 9 || die '另一个安装或证书操作正在运行，请等待完成后重试'; }
 ask() {
     local prompt_reply
     printf '%s [%s]：' "$2" "$3" >&3
@@ -395,23 +397,27 @@ certificate_menu() {
     esac
 }
 install_release() {
-    local arch asset release_url status active=0 admin_action='' existing=0
+    local arch asset release_url status version=$VERSION active=0 admin_action='' existing=0
     [[ ! -x $INSTALL_DIR/tg-relay ]] || existing=1
     arch=$(architecture "$(uname -m)") || die '仅支持 Linux amd64 / arm64'
-    if [[ -z $VERSION ]]; then
-        release_url=$(download --output /dev/null --write-out '%{url_effective}' "https://github.com/$REPOSITORY/releases/latest")
-        VERSION=${release_url##*/}
+    if [[ -z $version ]]; then
+        printf '正在检查最新正式版本…\n'
+        release_url=$(download --max-time 15 --header 'Cache-Control: no-cache' --output /dev/null --write-out '%{url_effective}' "https://github.com/$REPOSITORY/releases/latest?check=$(date +%s)")
+        release_url=${release_url%%\?*}
+        version=${release_url##*/}
     fi
-    valid_version "$VERSION" || die '未找到正式发布版本，或版本格式不是 vX.Y.Z'
+    valid_version "$version" || die '未找到正式发布版本，或版本格式不是 vX.Y.Z'
     asset="tg-relay-linux-$arch.tar.gz"
     WORK_DIR=$(mktemp -d /tmp/tg-relay.XXXXXXXX)
-    printf '下载 %s / %s …\n' "$VERSION" "$arch"
-    download --output "$WORK_DIR/$asset" "https://github.com/$REPOSITORY/releases/download/$VERSION/$asset"
-    download --output "$WORK_DIR/SHA256SUMS" "https://github.com/$REPOSITORY/releases/download/$VERSION/SHA256SUMS"
+    printf '下载 %s / %s …\n' "$version" "$arch"
+    download --no-silent --progress-bar --output "$WORK_DIR/$asset" "https://github.com/$REPOSITORY/releases/download/$version/$asset"
+    download --output "$WORK_DIR/SHA256SUMS" "https://github.com/$REPOSITORY/releases/download/$version/SHA256SUMS"
+    printf '正在校验安装包 SHA256…\n'
     verify_archive "$asset"
     tar --extract --gzip --file "$WORK_DIR/$asset" --directory "$WORK_DIR" --no-same-owner tg-relay tg-relay.service install.sh tg-relay-renew.service tg-relay-renew.timer tg-relay-update.service tg-relay-update.path LICENSE.mtg THIRD_PARTY_NOTICES.md
     [[ -f $WORK_DIR/tg-relay && ! -L $WORK_DIR/tg-relay && -f $WORK_DIR/tg-relay.service && ! -L $WORK_DIR/tg-relay.service ]] || die '发布包内容无效'
     chmod 0755 "$WORK_DIR/tg-relay"
+    [[ $("$WORK_DIR/tg-relay" -version) == "$version" ]] || die '安装包实际版本与目标版本不一致，原服务未更改'
     read_configuration
     if ((existing)); then
         [[ -f $CONFIG_DIR/panel.conf ]] || die '已有程序缺少面板配置，请通过菜单 3 修复后更新'
@@ -455,7 +461,7 @@ install_release() {
         if [[ -n $TLS_CERT ]]; then activate_certificate; fi
         write_configuration
     fi
-    printf '%s\n' "$VERSION" > "$INSTALL_DIR/version"
+    printf '%s\n' "$version" > "$INSTALL_DIR/version"
     chown -R tg-relay:tg-relay "$DATA_DIR"
     chown root:tg-relay "$CONFIG_DIR"
     if ((existing == 0)) && [[ -n $TLS_CERT ]]; then certificate_deploy; configure_renewal; fi
@@ -465,7 +471,8 @@ install_release() {
     systemctl restart tg-relay.service
     RESTART_ON_ERROR=0
     if wait_panel; then
-        printf '\n安装完成，服务已响应。版本：%s\n管理员用户名：%s\n以后输入 tg 打开管理菜单。\n' "$VERSION" "$ADMIN_USER"
+        systemctl is-active --quiet tg-relay-update.path || die '面板已更新，但更新监视组件未启动，请运行 systemctl status tg-relay-update.path --no-pager 检查'
+        printf '\n安装完成，服务已响应。版本：%s\n管理员用户名：%s\n以后输入 tg 打开管理菜单。\n' "$version" "$ADMIN_USER"
         show_panel
         return
     fi
@@ -506,10 +513,8 @@ main() {
     [[ -d /run/systemd/system ]] || die '需要使用 systemd 的 Linux 系统'
     local command choice
     for command in curl tar sha256sum awk ss flock useradd install systemctl; do command -v "$command" >/dev/null || die "缺少命令 $command，请先安装 curl ca-certificates tar coreutils iproute2 util-linux passwd"; done
-    exec 9>/run/tg-relay-install.lock
-    flock -n 9 || die '另一个安装器正在运行'
     trap cleanup EXIT
-    if [[ $operation == renew ]]; then renew_certificate; return; fi
+    if [[ $operation == renew ]]; then acquire_install_lock; renew_certificate; return; fi
     exec 3<>/dev/tty || die '需要交互终端，请在 SSH 终端运行'
     trap 'exit 130' INT
     trap 'exit 143' TERM
@@ -525,6 +530,7 @@ main() {
         (
             set -Eeuo pipefail
             trap cleanup EXIT
+            case "$choice" in 2|8) ;; *) acquire_install_lock;; esac
             case "$choice" in
                 1) install_release;;
                 2) show_panel;;
@@ -541,6 +547,7 @@ main() {
             esac
         )
         action_status=$?
+        if [[ $choice == 1 ]]; then VERSION=; fi
         set -e
         if ((action_status != 0)); then printf '操作未完成（退出码 %s），可修改后重试。\n' "$action_status" >&3; fi
         printf '按回车返回菜单…' >&3

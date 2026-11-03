@@ -130,7 +130,7 @@ func (a *API) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		progress := a.updater.progress()
-		sendJSON(w, 200, map[string]any{"initialized": a.s.store.hasAdmin(), "authenticated": a.authenticated(r), "version": buildVersion, "ready": a.s.engine.ready(), "updatePhase": progress.Phase})
+		sendJSON(w, 200, map[string]any{"initialized": a.s.store.hasAdmin(), "authenticated": a.authenticated(r), "version": buildVersion, "ready": a.s.engine.ready(), "updatePhase": progress.Phase, "updateTarget": progress.Target})
 		return
 	case "/api/setup":
 		a.setup(w, r)

@@ -4,13 +4,50 @@ const $=selector=>document.querySelector(selector);
 const pageNames={overview:'运行概览',inbounds:'入站节点',routes:'路由管理',outbounds:'落地出口',users:'用户管理',logs:'活动日志',settings:'面板设置'};
 const defaultTLSDomains=['www.cloudflare.com','www.apple.com','www.microsoft.com'];
 const tlsPresets=()=>state.config.settings.tlsDomains?.length?state.config.settings.tlsDomains:defaultTLSDomains;
-let authEpoch=0,updateState=null,updateTimer=null,updateStarted=0,updateChecked=false;
+let authEpoch=0,updateState=null,updateTimer=null,updateStarted=0,updateChecked=false,updateSubmitting=false,updateReloading=false,updateTarget='',updateIssue='',updateReconnecting=false;
 function showVersion(version){document.querySelectorAll('[data-build-version]').forEach(el=>el.textContent=version==='dev'?'开发构建':version||'版本未知');}
-const updating=()=>['queued','downloading','installing'].includes(updateState?.progress?.phase);
-function updateSection(){const u=updateState,p=u?.progress||{},active=updating(),latest=u?.latest||'尚未检查';return `<section class="settings-section"><h2>版本与更新</h2><dl class="kv-list"><div><dt>当前运行版本</dt><dd>${esc(u?.current||state.version||'dev')}</dd></div><div><dt>最新正式版本</dt><dd>${esc(latest)}</dd></div><div><dt>上次检查</dt><dd>${u?.checkedAt&&!u.checkedAt.startsWith('0001')?time(u.checkedAt):'尚未检查'}</dd></div></dl><div class="update-actions">${button(icon('refresh',13)+'检查更新','check-update')}${u?.available&&u.supported&&!active?button('一键更新到 '+esc(u.latest),'open-update','','primary'):''}${u?.latest?`<a class="telegram-link" href="${esc(u.releaseURL)}" target="_blank" rel="noopener noreferrer">发布说明</a>`:''}</div>${u?.error?info(esc(u.error),'alert'):''}${u?.reason?info(esc(u.reason)):''}${p.message?info(esc(p.message),p.phase==='failed'?'alert':'info'):''}${u&&!u.error&&u.latest&&!u.available?'<p class="field-hint">'+(u.current==='dev'?'开发构建不参与正式版本比较。':'当前已是最新版本或高于最新正式版本。')+'</p>':''}<p class="field-hint">更新保留端口、账号密码、证书和全部代理数据，不再显示安装设置。下载并校验完成后重启服务，TG 连接短暂断开，完成后需重新登录。</p></section>`;}
-function paintUpdate(){const notice=$('#update-notice');if(notice){notice.hidden=!updateState?.available;notice.textContent='新版 '+(updateState?.latest||'');}const target=$('#update-panel');if(target)target.innerHTML=updateSection();}
-async function loadUpdate(check=false){updateState=await api(check?'update/check':'update',check?{method:'POST'}:{});paintUpdate();if(updating())watchUpdate();}
-function watchUpdate(){if(updateTimer)return;updateStarted=Date.now();updateTimer=setInterval(async()=>{if(Date.now()-updateStarted>600000){clearInterval(updateTimer);updateTimer=null;toast('更新状态等待超时，请在服务器查看 journalctl -u tg-relay-update',true);return;}try{const response=await fetch('/api/update',{credentials:'same-origin'});if(response.status===401){const auth=await fetch('/api/auth',{credentials:'same-origin'}).then(r=>r.json());showVersion(auth.version);if(auth.version===(updateState.progress?.target||updateState.latest)&&auth.ready&&auth.updatePhase==='complete'){clearInterval(updateTimer);updateTimer=null;showAuth(true);toast('更新完成，请重新登录');}else if(auth.updatePhase==='failed'){clearInterval(updateTimer);updateTimer=null;showAuth(true);toast('更新失败，请重新登录查看原因；也可运行 tg 检查服务。',true);}else if(state)showAuth(true);return;}if(!response.ok)return;updateState=await response.json();paintUpdate();if(!updating()){clearInterval(updateTimer);updateTimer=null;if(updateState.progress.phase==='complete')toast('更新完成，请重新登录');}}catch{if($('#update-panel'))$('#update-panel').innerHTML=info('服务正在更新或重启，正在等待恢复连接…');}},2000);}
+const updatePhases=['queued','downloading','verifying','installing','restarting','validating'];
+const updating=()=>updateSubmitting||updateReloading||!!updateStarted||updatePhases.includes(updateState?.progress?.phase);
+function updateProgressView(){
+  const p=updateState?.progress||{},labels=['等待任务','下载安装包','校验文件','安装重启','确认运行'],step={submitting:0,queued:0,downloading:1,verifying:2,installing:3,restarting:3,validating:4,complete:5}[p.phase]??0;
+  const percent=p.phase==='complete'?100:p.phase==='downloading'&&p.total>0?Math.min(100,Math.floor(p.downloaded/p.total*100)):null;
+  const title=updateIssue?'无法确认更新状态':p.phase==='failed'?'更新失败':p.phase==='complete'?'更新完成，正在刷新页面':updateSubmitting?'正在提交更新':updateReconnecting?'正在等待服务恢复':labels[Math.min(step,4)];
+  return `<div class="update-progress ${p.phase==='failed'||updateIssue?'has-error':''}"><div class="update-progress-heading"><strong role="status">${esc(title)}</strong><span>${percent===null?`阶段 ${Math.min(step+1,5)} / 5`:percent+'%'}</span></div><div class="update-track ${percent===null?'indeterminate':''}" role="progressbar" aria-label="程序更新进度" aria-valuemin="0" aria-valuemax="100" ${percent===null?'':`aria-valuenow="${percent}"`} aria-valuetext="${esc(title)}"><span style="transform:scaleX(${percent===null?'.35':percent/100})"></span></div><ol class="update-steps">${labels.map((label,i)=>`<li class="${step>i?'done':step===i?'current':''}">${step>i?'✓':i+1} ${label}</li>`).join('')}</ol>${p.phase==='downloading'&&p.downloaded>0?`<p class="field-hint">已下载 ${bytes(p.downloaded)}${p.total>0?' / '+bytes(p.total):' · 下载源未提供总大小'}</p>`:''}<p class="update-message">${esc(updateIssue||(updateReconnecting?'更新期间连接可能暂时中断，页面正在自动重试，请保持页面打开。':p.message||'正在准备更新任务…'))}</p>${p.phase==='queued'?'<p class="field-hint">等待系统更新服务；其他安装或证书操作正在进行时，需要等待它释放更新锁。</p>':''}${updateIssue?button('重新获取进度','retry-update'):''}${p.phase==='failed'||updateIssue?'<p class="field-hint">服务器可运行 journalctl -u tg-relay-update -n 80 --no-pager 查看原因；不要反复提交更新。</p>':''}</div>`;
+}
+function updateSection(){const u=updateState,active=updating(),latest=u?.latest||'尚未检查';return `<section class="settings-section"><h2>版本与更新</h2><dl class="kv-list"><div><dt>当前运行版本</dt><dd>${esc(u?.current||state?.version||'dev')}</dd></div><div><dt>最新正式版本</dt><dd>${esc(latest)}</dd></div><div><dt>上次检查</dt><dd>${u?.checkedAt&&!u.checkedAt.startsWith('0001')?time(u.checkedAt):'尚未检查'}</dd></div></dl><div class="update-actions"><button type="button" data-action="check-update" ${active?'disabled':''}>${icon('refresh',13)}检查更新</button>${active?button('查看更新进度','show-update','','primary'):u?.available?`<button type="button" class="primary" data-action="open-update" ${u.supported?'':'disabled'}>${u.supported?'一键更新到 '+esc(u.latest):'需修复更新组件'}</button>`:''}${u?.latest?`<a class="telegram-link" href="${esc(u.releaseURL)}" target="_blank" rel="noopener noreferrer">发布说明</a>`:''}</div>${u?.error?info(esc(u.error),'alert'):''}${u?.reason?info(esc(u.reason)):''}${active||u?.progress?.phase||updateIssue?updateProgressView():''}${u&&!u.error&&u.latest&&!u.available&&!active?'<p class="field-hint">'+(u.current==='dev'?'开发构建不参与正式版本比较。':'当前已是最新版本或高于最新正式版本。')+'</p>':''}<p class="field-hint">自动获取最新正式版，无需输入版本号。更新保留端口、账号密码、证书和全部代理数据。更新期间暂停配置编辑，重启会短暂断开 TG 连接；确认新版正常后自动刷新，请重新登录。</p></section>`;}
+function paintUpdate(){
+  const notice=$('#update-notice');if(notice){notice.hidden=!updating()&&!updateIssue&&!updateState?.available;notice.textContent=updating()?'更新中…':updateIssue?'查看更新状态':'新版 '+(updateState?.latest||'');notice.dataset.action=updating()||updateIssue?'show-update':'go-settings';}
+  const target=$('#update-panel');if(target)target.innerHTML=updateSection();
+  const progress=$('#update-progress-body');if(progress)progress.innerHTML=updateProgressView();
+  if($('#settings-form'))$('#settings-form').inert=updating();
+}
+function showUpdateProgress(){dialog('程序更新',`${esc(updateState?.current||state?.version||'')} → ${esc(updateTarget||updateState?.progress?.target||updateState?.latest||'')}`,`<div id="update-progress-body">${updateProgressView()}</div>`,'','后台继续');}
+async function loadUpdate(check=false){updateState=await api(check?'update/check':'update',check?{method:'POST'}:{});paintUpdate();if(updatePhases.includes(updateState.progress?.phase))watchUpdate();}
+function stopUpdate(message=''){clearTimeout(updateTimer);updateTimer=null;updateStarted=0;updateIssue=message;paintUpdate();}
+function completeUpdate(){stopUpdate();updateReloading=true;updateReconnecting=false;updateState.progress={...updateState.progress,phase:'complete',message:'新版已通过运行检查，正在自动刷新页面。'};paintUpdate();setTimeout(()=>location.reload(),800);}
+function watchUpdate(){
+  if(updateStarted||updateReloading)return;updateStarted=Date.now();updateTarget=updateTarget||updateState.progress?.target||updateState.latest;updateIssue='';
+  const poll=async()=>{
+    if(Date.now()-updateStarted>600000){stopUpdate('等待更新超过 10 分钟，请检查服务器更新日志；可重新获取进度，不会重复提交任务。');return;}
+    try{
+      const response=await fetch('/api/update',{credentials:'same-origin',cache:'no-store',signal:AbortSignal.timeout(5000)});
+      if(response.status!==401){
+        if(!response.ok)throw new Error('无法读取更新状态');const result=await response.json();
+        if(result.progress?.target!==updateTarget){stopUpdate('未发现目标版本的更新任务，请先核对服务器状态，再重新检查更新。');return;}
+        updateState=result;updateReconnecting=false;
+        if(result.progress.phase==='failed'){stopUpdate();return;}
+        if(!updatePhases.includes(result.progress.phase)&&result.progress.phase!=='complete'){stopUpdate('更新状态无效，请检查服务器日志。');return;}
+      }
+      if(response.status===401||updateState.progress?.phase==='complete'){
+        const authResponse=await fetch('/api/auth',{credentials:'same-origin',cache:'no-store',signal:AbortSignal.timeout(5000)});if(!authResponse.ok)throw new Error('服务尚未恢复');const auth=await authResponse.json();
+        if(auth.updatePhase==='failed'&&(!auth.updateTarget||auth.updateTarget===updateTarget)){updateState.progress={...updateState.progress,phase:'failed',message:'更新失败或已恢复原程序，请重新登录查看详细原因，或在服务器检查更新日志。'};stopUpdate();return;}
+        if(auth.version===updateTarget&&auth.ready&&auth.updatePhase==='complete'&&(!auth.updateTarget||auth.updateTarget===updateTarget)){completeUpdate();return;}
+        if(updatePhases.includes(auth.updatePhase))updateState.progress={...updateState.progress,phase:auth.updatePhase};else if(updateState.progress?.phase==='complete')updateState.progress.phase='validating';updateReconnecting=true;
+      }
+    }catch{updateReconnecting=true;}
+    paintUpdate();updateTimer=setTimeout(poll,1500);
+  };poll();
+}
 let state=null,page='inbounds',query='',filter='all',previousFocus=null,toastTimer,busy=false,history=[];
 const drafts=new Map(),formStates=new WeakMap();
 const formValues=form=>Array.from(new FormData(form).entries());
@@ -57,8 +94,8 @@ theme(document.documentElement.dataset.theme);
 async function api(path,options={}){
   const response=await fetch(`/api/${path}`,{credentials:'same-origin',...options,headers:{...(options.body?{'Content-Type':'application/json'}:{}),...(state&&options.method&&options.method!=='GET'?{'If-Match':String(state.config.revision)}:{}),...options.headers}});
   let data;try{data=await response.json();}catch{throw new Error('服务响应无效，请确认通过 TG Relay 程序打开面板。');}
-  if(response.status===409&&state){close();await refresh();throw new Error('配置已被其他会话修改，已刷新，请重新编辑。');}
-  if(!response.ok){if(response.status===401&&path!=='login')showAuth(true);throw new Error(data.error||`请求失败 (${response.status})`);}
+  if(response.status===409&&state&&!path.startsWith('update')){close();await refresh();throw new Error('配置已被其他会话修改，已刷新，请重新编辑。');}
+  if(!response.ok){if(response.status===401&&path!=='login'&&!updating())showAuth(true);const error=new Error(data.error||`请求失败 (${response.status})`);error.status=response.status;throw error;}
   return data;
 }
 async function refresh(renderPage=true){
@@ -85,7 +122,7 @@ function renderLogs(){return `${heading('活动日志','查看配置变更、探
 function liveChart(){if(history.length<2)return empty('正在收集实时速率','图表来自本次浏览器会话的实际采样。');const maximum=Math.max(1,...history.map(v=>Math.max(v.up,v.down)));const points=key=>history.map((v,i)=>`${30+i/(history.length-1)*590},${160-v[key]/maximum*125}`).join(' ');return `<div class="chart-wrap"><svg viewBox="0 0 650 200" role="img" aria-label="本次会话实际上下行速率"><g stroke="var(--line)" stroke-dasharray="3 4"><path d="M30 35H620M30 97H620M30 160H620"/></g><polyline points="${points('down')}" fill="none" stroke="var(--accent)" stroke-width="2"/><polyline points="${points('up')}" fill="none" stroke="var(--violet)" stroke-width="2"/><g fill="var(--muted)" font-size="10"><text x="30" y="188">${new Date(history[0].at).toLocaleTimeString()}</text><text x="565" y="188">现在</text></g></svg></div>`;}
 function renderOverview(){return `${heading('运行概览','实时查看连接、流量和路由运行情况。',button(icon('refresh',13)+'刷新','refresh'))}${stats()}<div class="overview-grid"><section class="panel"><div class="panel-title-row"><div><h2>实时传输</h2><div class="subtext">当前浏览器会话 · 每 5 秒采样</div></div><div class="chart-legend"><span><i class="legend-dot"></i>下行</span><span><i class="legend-dot light"></i>上行</span></div></div>${liveChart()}</section><section class="panel"><div class="panel-title-row"><h2>最近活动</h2>${button('全部','go-logs','','link-button')}</div><div class="activity-list">${(state.events||[]).slice(0,4).map(e=>`<div class="activity-item"><span class="activity-icon">${icon(e.level==='error'?'alert':'check',13)}</span><div>${esc(e.title)}<small>${esc(e.detail)}</small></div></div>`).join('')||empty('暂无活动')}</div></section></div><section class="panel"><div class="panel-title-row"><h2>入站运行状态</h2>${button('管理入站','go-inbounds','','link-button')}</div>${nodesTable(state.config.inbounds.slice(0,5))}</section>`;}
 function renderSettings(){return `${heading('面板设置','工作空间、外观与配置备份。')}<div class="settings-layout"><div class="settings-nav"><button class="active" type="button">${icon('settings',14)}基本设置</button></div><div class="panel" id="update-panel">${updateSection()}</div><form class="panel" id="settings-form"><section class="settings-section"><h2>工作空间</h2><p>名称显示在导航栏中。</p><div class="form-grid">${field('工作空间名称','workspace',state.config.settings.workspace,{full:true,required:true})}</div></section><section class="settings-section"><h2>Fake TLS 域名预设</h2><p>每行一个完整 HTTPS 网站域名，首项用于新入站默认值。修改预设不会更改已有入站或 TG 链接。</p><label class="form-field"><span class="field-label">候选域名（每行一个）</span><textarea name="tlsDomains" rows="4" aria-describedby="tls-presets-help">${esc(tlsPresets().join('\n'))}</textarea><p class="field-hint" id="tls-presets-help">最多 32 个，不带协议和端口；留空恢复内置列表。预设仅供选择，需经所选线路测试。</p></label></section><section class="settings-section"><h2>界面外观</h2><p>使用右上角的浅色 / 深色按钮即时切换，浏览器会记住选择。</p><h2>配置备份</h2><p>导出的 JSON 包含落地密码和用户密钥，请妥善保管。管理员登录密码不包含在内。</p>${button(icon('download',13)+'下载配置备份','backup')}</section><div id="form-error" class="form-error" role="alert"></div><div class="settings-bottom"><button class="primary" type="submit">保存设置</button></div></form></div>`;}
-function render(){if(!state)return;remember($('#settings-form'));page=pageNames[location.hash.slice(1)]?location.hash.slice(1):'inbounds';$('#breadcrumb').textContent=pageNames[page];document.querySelectorAll('[data-page]').forEach(a=>{a.classList.toggle('active',a.dataset.page===page);if(a.dataset.page===page)a.setAttribute('aria-current','page');else a.removeAttribute('aria-current');});$('#content').innerHTML=(state.persistenceError?info('流量保存失败：'+esc(state.persistenceError),'alert'):'')+({overview:renderOverview,inbounds:renderInbounds,routes:renderRoutes,outbounds:renderOutbounds,users:renderUsers,logs:renderLogs,settings:renderSettings}[page])();if(page==='inbounds')$('#status-filter').value=filter;mountForm($('#settings-form'));if(page==='settings'&&!updateState&&updateChecked)loadUpdate().catch(error=>toast(error.message,true));}
+function render(){if(!state)return;remember($('#settings-form'));page=pageNames[location.hash.slice(1)]?location.hash.slice(1):'inbounds';$('#breadcrumb').textContent=pageNames[page];document.querySelectorAll('[data-page]').forEach(a=>{a.classList.toggle('active',a.dataset.page===page);if(a.dataset.page===page)a.setAttribute('aria-current','page');else a.removeAttribute('aria-current');});$('#content').innerHTML=(state.persistenceError?info('流量保存失败：'+esc(state.persistenceError),'alert'):'')+({overview:renderOverview,inbounds:renderInbounds,routes:renderRoutes,outbounds:renderOutbounds,users:renderUsers,logs:renderLogs,settings:renderSettings}[page])();if(page==='inbounds')$('#status-filter').value=filter;mountForm($('#settings-form'));if($('#settings-form'))$('#settings-form').inert=updating();if(page==='settings'&&!updateState&&updateChecked)loadUpdate().catch(error=>toast(error.message,true));}
 
 function close(){remember($('form.dialog'));if(!$('.overlay'))return;$('#overlay-root').innerHTML='';document.body.style.overflow='';$('.shell').inert=false;$('.sidebar').inert=false;const target=previousFocus;previousFocus=null;if(target?.isConnected)target.focus();}
 function overlay(html){
@@ -96,7 +133,7 @@ function overlay(html){
   document.body.style.overflow='hidden';$('.shell').inert=true;$('.sidebar').inert=true;mountForm($('form.dialog'));
   requestAnimationFrame(()=>{const modal=$('.dialog'),match=action?Array.from(modal.querySelectorAll('[data-action]')).find(b=>b.dataset.action===action&&b.dataset.id===id):null;(match||modal.querySelector('[autofocus]')||modal.querySelector('input:not([type="hidden"]),select')||modal.querySelector('button'))?.focus();});
 }
-function dialog(title,description,body,form='',submit='保存',extra=''){overlay(`<${form?'form':'section'} class="dialog" ${form?`id="${form}"`:''} role="dialog" aria-modal="true" aria-labelledby="dialog-title"><div class="dialog-header"><div><h2 id="dialog-title">${title}</h2><p>${description}</p></div><button type="button" class="icon-button ghost" aria-label="关闭对话框" data-action="close">${icon('close',16)}</button></div><div class="dialog-body">${body}<div id="form-error" class="form-error" role="alert"></div></div><div class="dialog-footer">${extra}${form?button('取消','close'):''}${form?`<button class="primary" type="submit">${submit}</button>`:button('完成','close','','primary')}</div></${form?'form':'section'}>`);}
+function dialog(title,description,body,form='',submit=form?'保存':'完成',extra=''){overlay(`<${form?'form':'section'} class="dialog" ${form?`id="${form}"`:''} role="dialog" aria-modal="true" aria-labelledby="dialog-title"><div class="dialog-header"><div><h2 id="dialog-title">${title}</h2><p>${description}</p></div><button type="button" class="icon-button ghost" aria-label="关闭对话框" data-action="close">${icon('close',16)}</button></div><div class="dialog-body">${body}<div id="form-error" class="form-error" role="alert"></div></div><div class="dialog-footer">${extra}${form?button('取消','close'):''}${form?`<button class="primary" type="submit">${submit}</button>`:button(submit||'完成','close','','primary')}</div></${form?'form':'section'}>`);}
 function modeChoices(){return `<span class="field-label" style="margin-top:18px">应用方式</span><div class="switch-method"><label class="method-choice"><input type="radio" name="mode" value="smooth" checked>平滑切换<small>新连接使用新路由，旧连接继续。</small></label><label class="method-choice"><input type="radio" name="mode" value="immediate">立即切换<small>断开受影响连接，客户端重新连接。</small></label></div>`;}
 function availablePort(){const occupied=new Set([...state.config.inbounds.map(n=>n.port),Number(location.port)]);for(let port=8443;port<=65535;port++)if(!occupied.has(port))return port;return 8443;}
 async function detectEntry(form,replace){const input=form.elements.publicHost,initial=input.value,unchanged=JSON.stringify(formValues(form)),message=form.querySelector('#entry-source');if(message)message.textContent='正在识别服务器公网入口…';try{const result=await api('inbound-defaults');if(!form.isConnected)return;if(input.value===initial&&(replace||!input.value)){const pristine=!replace&&!dirty(form)&&JSON.stringify(formValues(form))===unchanged;input.value=result.host;if(pristine)formStates.get(form).baseline=JSON.stringify(formValues(form));else remember(form);}if(message)message.textContent='识别来源：'+result.source+'。可手动修改。';}catch(error){if(message?.isConnected)message.textContent=error.message;}}
@@ -124,7 +161,7 @@ function showAuth(initialized){
 async function save(kind,id,data,mode='smooth'){return api(`${kind}${id?'/'+id:''}?mode=${mode}`,{method:id?'PATCH':'POST',body:JSON.stringify(data)});}
 function formError(form,error){const target=form.querySelector('[role="alert"]');if(target?.isConnected)target.textContent=error.message;else toast(error.message,true);}
 document.addEventListener('submit',async event=>{
-  event.preventDefault();if(busy)return;const form=event.target,d=new FormData(form),id=d.get('entityID')||'',mode=d.get('mode')||'smooth',enabled=d.has('enabled');busy=true;form.setAttribute('aria-busy','true');form.querySelectorAll('button[type="submit"]').forEach(b=>b.disabled=true);
+  event.preventDefault();if(updating()){toast('更新期间暂停配置编辑，请等待完成。',true);return;}if(busy)return;const form=event.target,d=new FormData(form),id=d.get('entityID')||'',mode=d.get('mode')||'smooth',enabled=d.has('enabled');busy=true;form.setAttribute('aria-busy','true');form.querySelectorAll('button[type="submit"]').forEach(b=>b.disabled=true);
   try{
     if(form.id==='setup-form'||form.id==='login-form'){if(form.id==='setup-form'&&d.get('password')!==d.get('confirmation'))throw new Error('两次输入的密码不一致。');await api(form.id==='setup-form'?'setup':'login',{method:'POST',body:JSON.stringify({username:d.get('username'),password:d.get('password')})});await refresh();return;}
     let after=null;
@@ -147,6 +184,7 @@ document.addEventListener('click',async event=>{
   if(busy&&event.target.closest('[data-action],[data-page]')){event.preventDefault();return;}
   const nav=event.target.closest('[data-page]');if(nav){event.preventDefault();leave(()=>{query='';filter='all';$('.sidebar').classList.remove('mobile-open');close();if(nav.dataset.page===page)render();else location.hash=nav.dataset.page;});return;}
   const control=event.target.closest('[data-action]');if(!control)return;const {action,id}=control.dataset;
+  if(updating()&&!['close','show-update','retry-update'].includes(action)&&!action.startsWith('go-')){toast('更新正在进行，请等待完成后再修改配置。',true);return;}
   try{
     if(action.startsWith('go-')){leave(()=>{close();location.hash=action.slice(3);});return;}
     if(action.startsWith('delete-')){confirmDelete({inbound:'inbounds',outbound:'outbounds',route:'routes',user:'users'}[action.slice(7)],id);return;}
@@ -154,8 +192,17 @@ document.addEventListener('click',async event=>{
       case 'close':leave(close);break;
       case 'detect-entry':control.disabled=true;await detectEntry($('#inbound-form'),true);break;
       case 'check-update':control.disabled=true;control.textContent='检查中…';await loadUpdate(true);if(updateState.error)toast(updateState.error,true);else toast(updateState.available?'发现新版本 '+updateState.latest:'版本检查完成');break;
-      case 'open-update':dialog('更新到 '+esc(updateState.latest),'安装包来自 wstimin/tg-relay 官方仓库。',info('下载和 SHA256 校验通过后将重启 TG Relay，已有 TG 连接会短暂断开。端口、管理员账号密码、证书、路由、用户密钥及流量全部保留，不需要重新设置。')+info('新版启动检查失败时恢复原程序。更新成功后需重新登录面板。'),'','',button('确认更新','start-update','','primary'));break;
-      case 'start-update':{if(dirty($('#settings-form'))){toast('请先保存设置或放弃未保存的修改，再更新程序。',true);return;}control.disabled=true;const target=updateState.latest;updateState=await api('update',{method:'POST',body:JSON.stringify({version:target,confirm:true})});close();paintUpdate();watchUpdate();toast('更新任务已提交');break;}
+      case 'open-update':dialog('更新到 '+esc(updateState.latest),'自动选择最新正式版，无需输入版本号。',info('下载和 SHA256 校验通过后将重启 TG Relay，已有 TG 连接会短暂断开。端口、管理员账号密码、证书、路由、用户密钥及流量全部保留，不需要重新设置。')+info('新版启动检查失败时恢复原程序。确认新版运行正常后自动刷新页面，请重新登录。'),'','取消',button('确认更新','start-update','','primary'));break;
+      case 'show-update':showUpdateProgress();break;
+      case 'retry-update':updateReconnecting=false;watchUpdate();break;
+      case 'start-update':{
+        if(drafts.size||dirty($('#settings-form'))){toast('请先保存未完成的草稿，或放弃未保存修改，再更新程序。',true);return;}
+        updateSubmitting=true;updateTarget=updateState.latest;updateIssue='';updateReconnecting=false;updateState.progress={phase:'submitting',target:updateTarget,message:'正在提交更新请求，请勿重复点击。'};showUpdateProgress();paintUpdate();
+        try{updateState=await api('update',{method:'POST',body:JSON.stringify({version:updateTarget,confirm:true})});}
+        catch(error){updateState.progress={phase:error.status?'failed':'queued',target:updateTarget,message:error.status?error.message:'提交结果尚未确认，正在读取服务器状态，请勿重复提交。'};updateReconnecting=!error.status;}
+        finally{updateSubmitting=false;paintUpdate();}
+        if(updateState.progress.phase!=='failed')watchUpdate();break;
+      }
 
       case 'refresh':leave(()=>refresh().then(()=>toast('运行状态已更新')).catch(error=>toast(error.message,true)));break;
       case 'edit-inbound':editInbound(id);break;
@@ -188,7 +235,7 @@ document.addEventListener('keydown',event=>{document.documentElement.dataset.inp
 document.addEventListener('pointerdown',()=>document.documentElement.dataset.input='pointer');
 $('#mobile-menu').addEventListener('click',()=>{const open=$('.sidebar').classList.toggle('mobile-open');$('#mobile-menu').setAttribute('aria-expanded',String(open));});
 $('.skip-link').addEventListener('click',event=>{event.preventDefault();$('#content').focus();});
-window.addEventListener('beforeunload',event=>{if(drafts.size||dirty($('form.dialog'))||dirty($('#settings-form'))){event.preventDefault();event.returnValue='';}});
+window.addEventListener('beforeunload',event=>{if(!updateReloading&&(drafts.size||dirty($('form.dialog'))||dirty($('#settings-form')))){event.preventDefault();event.returnValue='';}});
 window.addEventListener('hashchange',()=>{remember($('#settings-form'));close();if(state)render();window.scrollTo(0,0);});
 setInterval(async()=>{if(!state||busy||updating()||dirty($('#settings-form'))||$('.overlay')||document.visibilityState!=='visible'||['INPUT','SELECT','TEXTAREA'].includes(document.activeElement?.tagName))return;try{await refresh();}catch(error){toast(error.message,true);}},5000);
 try{const auth=await api('auth');showVersion(auth.version);if(auth.authenticated)await refresh();else showAuth(auth.initialized);}catch(error){document.body.dataset.authenticated='false';$('#content').innerHTML=empty('无法连接 TG Relay 服务',esc(error.message));}

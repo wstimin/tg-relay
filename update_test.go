@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -17,6 +18,66 @@ import (
 	"testing"
 	"time"
 )
+
+func TestDownloadUpdateProgressAndLimits(t *testing.T) {
+	payload := strings.Repeat("release", 10000)
+	for _, known := range []bool{true, false} {
+		t.Run(fmt.Sprint("known-length-", known), func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if known {
+					w.Header().Set("Content-Length", fmt.Sprint(len(payload)))
+				} else {
+					w.(http.Flusher).Flush()
+				}
+				_, _ = w.Write([]byte(payload))
+			}))
+			defer server.Close()
+			var last, total int64
+			calls := 0
+			data, err := downloadUpdate(context.Background(), server.Client(), server.URL, int64(len(payload)), func(n, size int64) {
+				if n < last || n > int64(len(payload)) {
+					t.Fatalf("invalid progress: %d", n)
+				}
+				last, total = n, size
+				calls++
+			})
+			if err != nil || string(data) != payload || calls == 0 || last != int64(len(payload)) {
+				t.Fatalf("download: %v, %d/%d", err, last, total)
+			}
+			if (known && total != int64(len(payload))) || (!known && total != 0) {
+				t.Fatalf("invented content length: %d", total)
+			}
+			if _, err := downloadUpdate(context.Background(), server.Client(), server.URL, 20, nil); err == nil {
+				t.Fatal("oversized download accepted")
+			}
+		})
+	}
+}
+
+func TestUpdateProgressSurvivesRestart(t *testing.T) {
+	a := newAPI(testService(t), "", false)
+	a.updater.dir = t.TempDir()
+	for _, phase := range []string{"queued", "downloading", "verifying", "installing", "restarting", "validating", "complete", "failed"} {
+		p := updateProgress{Phase: phase, Target: "v0.4.2", At: time.Now(), Downloaded: 50, Total: 100}
+		if err := writeUpdateStatus(a.updater.dir, p); err != nil {
+			t.Fatal(err)
+		}
+		if got := a.updater.progress(); got.Phase != phase || got.Downloaded != 50 || got.Total != 100 {
+			t.Fatalf("lost status: %+v", got)
+		}
+		if updateActive(p) != (phase != "complete" && phase != "failed") {
+			t.Fatalf("active phase: %s", phase)
+		}
+		response := requestAPI(a, "GET", "/api/auth", "", nil)
+		var auth struct {
+			UpdatePhase  string `json:"updatePhase"`
+			UpdateTarget string `json:"updateTarget"`
+		}
+		if err := json.Unmarshal(response.Body.Bytes(), &auth); err != nil || auth.UpdatePhase != phase || auth.UpdateTarget != p.Target {
+			t.Fatal(response.Body.String(), err)
+		}
+	}
+}
 
 func TestVersionOrdering(t *testing.T) {
 	for _, item := range []struct {

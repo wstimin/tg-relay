@@ -6,7 +6,9 @@ cd "$(dirname "${BASH_SOURCE[0]}")/.."
 target=${1:?release tag required}
 [[ $target =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
 fixture=$(mktemp -d)
+menu_pid=
 cleanup() {
+    if [[ -n $menu_pid ]]; then kill "$menu_pid" >/dev/null 2>&1 || true; wait "$menu_pid" 2>/dev/null || true; fi
     systemctl disable --now tg-relay-update.path >/dev/null 2>&1 || true
     systemctl stop tg-relay.service || true
     rm -rf -- "$fixture"
@@ -48,6 +50,15 @@ python3 - "$fixture/check.json" "$target" <<'PY'
 import json,sys
 u=json.load(open(sys.argv[1]));assert u['latest']==sys.argv[2] and u['available'] and u['supported'],u
 PY
+# Keep the actual interactive tg menu idle while the panel update runs.
+# The menu must not hold the update lock while it waits for user input.
+mkfifo "$fixture/menu-input"
+exec 8<>"$fixture/menu-input"
+script --quiet --return --command /opt/tg-relay/manage.sh /dev/null <&8 > "$fixture/menu.log" 2>&1 &
+menu_pid=$!
+for _ in {1..50}; do if [[ $(cat "$fixture/menu.log") == *选择操作* ]]; then break; fi; sleep 0.1; done
+[[ $(cat "$fixture/menu.log") == *选择操作* ]] || { cat "$fixture/menu.log"; exit 1; }
+flock -n /run/tg-relay-install.lock true || { printf 'Idle tg menu blocks panel updates.\n'; exit 1; }
 curl -fsS -b "$fixture/cookies" -H 'Content-Type: application/json' -d "{\"version\":\"$target\",\"confirm\":true}" https://panel.example.com:18765/api/update
 for _ in {1..240}; do
     if [[ -f /var/lib/tg-relay/update-status.json ]]; then
@@ -58,6 +69,7 @@ for _ in {1..240}; do
     sleep 1
 done
 [[ ${phase:-} == complete ]]
+kill -0 "$menu_pid"
 [[ $(/opt/tg-relay/tg-relay -version) == "$target" && $(cat /opt/tg-relay/version) == "$target" ]]
 cmp /etc/tg-relay/panel.conf "$fixture/panel.conf"
 sha256sum -c "$fixture/cert-sha256"

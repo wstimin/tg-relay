@@ -118,7 +118,7 @@ INPUT
     mkdir -p "$INSTALL_DIR" "$DATA_DIR" "$CONFIG_DIR" "$fixture/package"
     cat > "$fixture/package/tg-relay" <<'MOCK'
 #!/usr/bin/env bash
-case "$1" in -admin-status) printf initialized;; -admin-username) printf retained-admin;; *) exit 1;; esac
+case "$1" in -version) printf '%s' "${MOCK_VERSION:-v0.4.0}";; -admin-status) printf initialized;; -admin-username) printf retained-admin;; *) exit 1;; esac
 MOCK
     chmod +x "$fixture/package/tg-relay"
     cp "$fixture/package/tg-relay" "$INSTALL_DIR/tg-relay"
@@ -142,15 +142,28 @@ MOCK
     wait_panel() { return 0; }
     show_panel() { return 0; }
     download() {
-        if [[ $3 == */SHA256SUMS ]]; then
+        local output='' url=${!#}
+        while (($#)); do if [[ $1 == --output ]]; then output=$2; shift 2; else shift; fi; done
+        if [[ $url == */releases/latest\?* ]]; then printf 'https://github.com/wstimin/tg-relay/releases/tag/%s' "$MOCK_VERSION"; return; fi
+        if [[ $url == */SHA256SUMS ]]; then
             local sum
             sum=$(sha256sum "$fixture/asset.tar.gz"); sum=${sum%% *}
-            printf '%s  tg-relay-linux-%s.tar.gz\n' "$sum" "$(architecture "$(uname -m)")" > "$2"
-        else cp "$fixture/asset.tar.gz" "$2"; fi
+            printf '%s  tg-relay-linux-%s.tar.gz\n' "$sum" "$(architecture "$(uname -m)")" > "$output"
+        else cp "$fixture/asset.tar.gz" "$output"; fi
     }
     # Package paths match real release archives (without a leading ./).
     tar -czf "$fixture/asset.tar.gz" -C "$fixture/package" tg-relay tg-relay.service install.sh tg-relay-renew.service tg-relay-renew.timer tg-relay-update.service tg-relay-update.path LICENSE.mtg THIRD_PARTY_NOTICES.md
     install_release
     [[ $(sha256sum "$CONFIG_DIR/panel.conf") == "$before" && $ADMIN_USER == retained-admin && $LISTEN == 0.0.0.0:9443 && $TLS_CERT == /existing/cert.pem ]]
+    VERSION=
+    export MOCK_VERSION=v0.4.1
+    install_release
+    [[ $(cat "$INSTALL_DIR/version") == v0.4.1 && -z $VERSION ]]
+    MOCK_VERSION=v0.4.2
+    install_release
+    [[ $(cat "$INSTALL_DIR/version") == v0.4.2 && -z $VERSION ]]
+    # Refuse a mismatched binary before changing installed files or service state.
+    VERSION=v0.9.9
+    if (install_release) >/dev/null 2>&1; then printf 'Wrong binary version accepted\n'; exit 1; fi
 )
 printf 'Installer input, config parsing and checksum checks passed.\n'
