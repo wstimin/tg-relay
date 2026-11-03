@@ -141,3 +141,7 @@ go build -trimpath -ldflags '-s -w' -o bin/tg-relay .
 当前尚未用真实 Telegram 客户端和实际服务器链路验证兼容性、延迟、吞吐及长期稳定性，不能承诺“秒连”或比 sing-box 更快、更省内存。出口测试只验证到一个 Telegram DC 的 TCP 隧道，不代表全部 Telegram 功能可用。DC 地址使用静态种子，未实现自动更新。SOCKS5 / HTTP 落地本身不提供额外链路加密；需要加密连接到落地时选择 HTTPS 代理。
 
 协议基础复用了 MIT 授权 mtg 的部分代码，经过多密钥和有界读写改造，详见 `THIRD_PARTY_NOTICES.md`。项目不是重新发明密码算法。
+
+### v0.4.0 更新验证
+
+[正式发布验证](https://github.com/wstimin/tg-relay/actions/runs/41600972338) 已通过一次性 Linux 环境中的真实 HTTPS / systemd 更新：通过管理员 API 检查并提交更新，下载正式发布包，执行更新任务及重启，核对证书和端口不变、原账号仍能登录、旧会话失效，并逐项比较配置、用户密钥、路由和累计流量保持不变。证书使用本机测试证书并完整验证域名与 CA；不代表真实 CA 签发或用户服务器部署。三个正式安装包均已下载并通过 SHA256，Windows 包实际输出 v0.4.0。
