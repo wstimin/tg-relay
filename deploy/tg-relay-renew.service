@@ -1,0 +1,9 @@
+[Unit]
+Description=Renew TG Relay panel certificate
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/tg-relay/manage.sh --renew-certificate
+UMask=0077

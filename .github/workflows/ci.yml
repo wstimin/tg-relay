@@ -17,11 +17,13 @@ jobs:
       - run: go vet ./...
       - run: node --check web/app.mjs && node --check web/theme.js && node --check web/icons.mjs
       - run: bash -n install.sh scripts/test-install.sh && bash scripts/test-install.sh
-      - run: shellcheck install.sh scripts/test-install.sh
+      - run: shellcheck install.sh scripts/test-install.sh scripts/test-admin.sh
       - name: Verify systemd unit
         run: |
           go build -o .cache/verify/tg-relay .
+          bash scripts/test-admin.sh .cache/verify/tg-relay
           sudo install -D .cache/verify/tg-relay /opt/tg-relay/tg-relay
           sudo useradd --system tg-relay
           sudo install -d /var/lib/tg-relay
-          systemd-analyze verify deploy/tg-relay.service
+          sudo install -m 0755 install.sh /opt/tg-relay/manage.sh
+          systemd-analyze verify deploy/tg-relay.service deploy/tg-relay-renew.service deploy/tg-relay-renew.timer

@@ -2,10 +2,8 @@ package main
 
 import (
 	"bytes"
-	"crypto/pbkdf2"
 	"crypto/rand"
 	"crypto/sha256"
-	"crypto/subtle"
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
@@ -42,10 +40,14 @@ func failChange(w http.ResponseWriter, err error) {
 	fail(w, code, err.Error())
 }
 
-type loginSession struct{ Expires time.Time }
+type loginSession struct {
+	Expires   time.Time
+	AdminHash [32]byte
+}
 type loginAttempt struct {
-	Count int
-	Until time.Time
+	Count     int
+	Until     time.Time
+	AdminHash [32]byte
 }
 type API struct {
 	s            *Service
@@ -274,7 +276,10 @@ func (a *API) authenticated(r *http.Request) bool {
 	defer a.mu.Unlock()
 	session, ok := a.sessions[key]
 	if ok && time.Now().Before(session.Expires) {
-		return true
+		var hash []byte
+		if err := a.s.store.db.QueryRow("SELECT hash FROM admin WHERE id=1").Scan(&hash); err == nil && session.AdminHash == sha256.Sum256(hash) {
+			return true
+		}
 	}
 	delete(a.sessions, key)
 	return false
@@ -297,7 +302,8 @@ func (a *API) setup(w http.ResponseWriter, r *http.Request) {
 		failChange(w, err)
 		return
 	}
-	if err := a.s.store.createAdmin(input.Username, input.Password); err != nil {
+	adminHash, err := a.s.store.saveAdmin(input.Username, input.Password, false)
+	if err != nil {
 		code := 400
 		if errors.Is(err, errAdminExists) {
 			code = 409
@@ -306,7 +312,7 @@ func (a *API) setup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.s.addEvent("info", "初始化完成", "管理员账户已创建")
-	a.issueSession(w, r)
+	a.issueSession(w, r, adminHash)
 	sendJSON(w, 200, map[string]bool{"ok": true})
 }
 func (a *API) login(w http.ResponseWriter, r *http.Request) {
@@ -315,11 +321,21 @@ func (a *API) login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	peer, _, _ := net.SplitHostPort(r.RemoteAddr)
+	var currentHash []byte
+	if err := a.s.store.db.QueryRow("SELECT hash FROM admin WHERE id=1").Scan(&currentHash); err != nil {
+		if err == sql.ErrNoRows {
+			fail(w, 409, "请先创建管理员")
+		} else {
+			fail(w, 500, "登录服务不可用")
+		}
+		return
+	}
+	credentialRevision := sha256.Sum256(currentHash)
 	a.mu.Lock()
 	now := time.Now()
 	attempt := a.attempts[peer]
-	if now.After(attempt.Until) {
-		attempt = loginAttempt{Until: now.Add(10 * time.Minute)}
+	if now.After(attempt.Until) || attempt.AdminHash != credentialRevision {
+		attempt = loginAttempt{Until: now.Add(10 * time.Minute), AdminHash: credentialRevision}
 	}
 	if attempt.Count >= 10 {
 		a.mu.Unlock()
@@ -349,29 +365,26 @@ func (a *API) login(w http.ResponseWriter, r *http.Request) {
 		fail(w, 400, "登录信息无效")
 		return
 	}
-	var username string
-	var salt, expected []byte
-	err := a.s.store.db.QueryRow("SELECT username,salt,hash FROM admin WHERE id=1").Scan(&username, &salt, &expected)
+	adminHash, err := a.s.store.authenticateAdmin(input.Username, input.Password)
 	if err == sql.ErrNoRows {
 		fail(w, 409, "请先创建管理员")
+		return
+	}
+	if errors.Is(err, errAdminCredentials) {
+		fail(w, 401, err.Error())
 		return
 	}
 	if err != nil {
 		fail(w, 500, "登录服务不可用")
 		return
 	}
-	actual, err := pbkdf2.Key(sha256.New, input.Password, salt, 600000, 32)
-	if err != nil || subtle.ConstantTimeCompare(actual, expected) != 1 || subtle.ConstantTimeCompare([]byte(username), []byte(input.Username)) != 1 {
-		fail(w, 401, "用户名或密码错误")
-		return
-	}
 	a.mu.Lock()
 	delete(a.attempts, peer)
 	a.mu.Unlock()
-	a.issueSession(w, r)
+	a.issueSession(w, r, adminHash)
 	sendJSON(w, 200, map[string]bool{"ok": true})
 }
-func (a *API) issueSession(w http.ResponseWriter, r *http.Request) {
+func (a *API) issueSession(w http.ResponseWriter, r *http.Request, adminHash [32]byte) {
 	var raw [32]byte
 	_, _ = rand.Read(raw[:])
 	token := base64.RawURLEncoding.EncodeToString(raw[:])
@@ -389,7 +402,7 @@ func (a *API) issueSession(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 	}
-	a.sessions[key] = loginSession{Expires: expires}
+	a.sessions[key] = loginSession{Expires: expires, AdminHash: adminHash}
 	a.mu.Unlock()
 	http.SetCookie(w, &http.Cookie{Name: "tg_session", Value: token, Path: "/", HttpOnly: true, Secure: a.secureCookie || r.TLS != nil, SameSite: http.SameSiteStrictMode, Expires: expires, MaxAge: 43200})
 }

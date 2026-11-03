@@ -22,6 +22,10 @@ valid_version v0.1.0
 if valid_version '../main'; then exit 1; fi
 valid_username admin-1
 if valid_username 'admin;id'; then exit 1; fi
+for value in panel.example.com xn--example.test; do valid_domain "$value" || exit 1; done
+for value in localhost 1.1.1.1 'https://panel.example.com' '-bad.example.com' 'bad-.example.com'; do
+    if valid_domain "$value"; then exit 1; fi
+done
 
 for value in 1.1.1.1 8.8.8.8; do valid_public_ipv4 "$value" || exit 1; done
 for value in localhost LOCALHOST 192.168.1.1 'https://panel.example.com'; do
@@ -44,6 +48,11 @@ printf payload > "$WORK_DIR/test.tar.gz"
 verify_archive test.tar.gz
 printf tampered > "$WORK_DIR/test.tar.gz"
 if (verify_archive test.tar.gz) >/dev/null 2>&1; then exit 1; fi
+if command -v openssl >/dev/null; then
+    MSYS2_ARG_CONV_EXCL=/CN= openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -keyout "$CONFIG_DIR/key.pem" -out "$CONFIG_DIR/cert.pem" -days 1 -subj /CN=panel.example.com -addext subjectAltName=DNS:panel.example.com 2>/dev/null
+    validate_certificate "$CONFIG_DIR/cert.pem" "$CONFIG_DIR/key.pem" panel.example.com
+    if validate_certificate "$CONFIG_DIR/cert.pem" "$CONFIG_DIR/key.pem" wrong.example.com; then printf 'Wrong certificate domain accepted.\n'; exit 1; fi
+fi
 (
     # Network responses are fixtures; these checks must not contact an IP service.
     mock_ip_response=
