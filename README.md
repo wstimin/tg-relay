@@ -156,6 +156,9 @@ ssh -L 8765:127.0.0.1:8765 your-user@your-server
 ```sh
 go test ./...
 go vet ./...
+node --check web/app.mjs
+node scripts/test-web-update.mjs
+node scripts/test-web-forms.mjs
 go build -trimpath -ldflags '-s -w' -o bin/tg-relay .
 ```
 
@@ -194,3 +197,5 @@ go build -trimpath -ldflags '-s -w' -o bin/tg-relay .
 ### v0.4.5 入站表单交互修复
 
 直接移除随输入方式切换的弹窗动画规则，改为打开时固定入场状态，并合并输入框焦点提示。空闲端口由认证后的后端实际试监听；异步 IP / 端口识别按字段跟踪修改，忽略过期请求并保留手动输入和未保存草稿。新增后端端口探测、检测后抢占与保存回滚、前端异步输入回归；浏览器核对亮暗主题下端口 / 名称切换及自动端口实际创建入站。
+
+[v0.4.5](https://github.com/wstimin/tg-relay/releases/tag/v0.4.5) 已发布，源码 [完整检查](https://github.com/wstimin/tg-relay/actions/runs/41632805612) 与 [正式发布验证](https://github.com/wstimin/tg-relay/actions/runs/41632967595) 均通过，包含 Linux 竞态、前端回归及真实 HTTPS / systemd 网页更新、终端失败回滚与成功重试。三个正式安装包均实际下载并通过 SHA256，Windows 实际输出 v0.4.5；临时浏览器服务正常退出。未更新用户服务器，未验证其防火墙放行或真实 Telegram 客户端。
