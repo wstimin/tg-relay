@@ -2,6 +2,12 @@ name: Release
 on:
   push:
     tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing version tag to publish
+        required: true
+        type: string
 permissions:
   contents: write
 jobs:
@@ -9,6 +15,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
@@ -29,4 +37,5 @@ jobs:
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" release/* --verify-tag --title "TG Relay $GITHUB_REF_NAME" --generate-notes
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+        run: gh release create "$RELEASE_TAG" release/* --verify-tag --title "TG Relay $RELEASE_TAG" --generate-notes
