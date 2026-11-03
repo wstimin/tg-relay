@@ -1,0 +1,27 @@
+name: Verify
+on:
+  push:
+    branches: [main]
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: go test -race ./...
+      - run: go vet ./...
+      - run: node --check web/app.mjs && node --check web/theme.js && node --check web/icons.mjs
+      - run: bash -n install.sh scripts/test-install.sh && bash scripts/test-install.sh
+      - run: shellcheck install.sh scripts/test-install.sh
+      - name: Verify systemd unit
+        run: |
+          go build -o .cache/verify/tg-relay .
+          sudo install -D .cache/verify/tg-relay /opt/tg-relay/tg-relay
+          sudo useradd --system tg-relay
+          sudo install -d /var/lib/tg-relay
+          systemd-analyze verify deploy/tg-relay.service

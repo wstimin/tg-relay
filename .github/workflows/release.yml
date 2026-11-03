@@ -1,0 +1,32 @@
+name: Release
+on:
+  push:
+    tags: ['v*']
+permissions:
+  contents: write
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: go test -race ./... && go vet ./...
+      - run: bash -n install.sh && bash scripts/test-install.sh && shellcheck install.sh scripts/test-install.sh
+      - name: Build release archives
+        shell: bash
+        run: |
+          mkdir -p release
+          for arch in amd64 arm64; do
+            mkdir -p ".cache/package-$arch"
+            CGO_ENABLED=0 GOOS=linux GOARCH="$arch" go build -trimpath -ldflags '-s -w' -o ".cache/package-$arch/tg-relay" .
+            cp deploy/tg-relay.service LICENSE.mtg THIRD_PARTY_NOTICES.md ".cache/package-$arch/"
+            tar -czf "release/tg-relay-linux-$arch.tar.gz" -C ".cache/package-$arch" tg-relay tg-relay.service LICENSE.mtg THIRD_PARTY_NOTICES.md
+          done
+          CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -ldflags '-s -w' -o release/tg-relay-windows-amd64.exe .
+          cd release && sha256sum tg-relay-* > SHA256SUMS
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" release/* --verify-tag --title "TG Relay $GITHUB_REF_NAME" --generate-notes

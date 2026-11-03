@@ -1,0 +1,27 @@
+[Unit]
+Description=TG Relay Telegram proxy
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=tg-relay
+Group=tg-relay
+WorkingDirectory=/var/lib/tg-relay
+Environment=TG_RELAY_LISTEN=127.0.0.1:8765 TG_RELAY_ADMIN_HOST=localhost TG_RELAY_SECURE_COOKIE=false
+EnvironmentFile=-/etc/tg-relay/panel.conf
+ExecStart=/opt/tg-relay/tg-relay -listen ${TG_RELAY_LISTEN} -data /var/lib/tg-relay -admin-host ${TG_RELAY_ADMIN_HOST} -secure-cookie=${TG_RELAY_SECURE_COOKIE}
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=30
+LimitNOFILE=16384
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/tg-relay
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target
