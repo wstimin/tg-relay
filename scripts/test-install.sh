@@ -30,19 +30,34 @@ done
 for value in '' localhost 256.1.1.1 01.2.3.4 0.0.0.0 127.0.0.1 10.1.2.3 172.16.0.1 192.168.1.1 169.254.1.1 100.64.0.1 198.18.0.1 192.0.2.1 224.0.0.1 '<html>'; do
     if valid_public_ipv4 "$value"; then printf 'Invalid public IPv4 accepted: %s\n' "$value"; exit 1; fi
 done
+# Never source generated configuration as shell code.
+CONFIG_DIR=$(mktemp -d)
+trap 'rm -rf -- "$CONFIG_DIR"' EXIT
+printf '%s\n' 'TG_RELAY_LISTEN=127.0.0.1:9999' 'TG_RELAY_ADMIN_HOST=localhost' 'TG_RELAY_SECURE_COOKIE=false' "UNRECOGNIZED=\$(exit 66)" > "$CONFIG_DIR/panel.conf"
+read_configuration
+[[ $LISTEN == 127.0.0.1:9999 && $ADMIN_HOST == localhost && $SECURE_COOKIE == false ]]
+
+# Check checksum failure stops installation before any system changes.
+WORK_DIR=$CONFIG_DIR
+printf payload > "$WORK_DIR/test.tar.gz"
+(cd "$WORK_DIR" && sha256sum test.tar.gz > SHA256SUMS)
+verify_archive test.tar.gz
+printf tampered > "$WORK_DIR/test.tar.gz"
+if (verify_archive test.tar.gz) >/dev/null 2>&1; then exit 1; fi
 (
     # Network responses are fixtures; these checks must not contact an IP service.
-    curl() { return 1; }
+    mock_ip_response=
+    curl() { [[ -n $mock_ip_response ]] || return 1; printf '%s' "$mock_ip_response"; }
     SSH_CONNECTION='192.0.2.1 12345 8.8.8.8 22'
     [[ $(detect_public_ipv4) == 8.8.8.8 ]]
     SSH_CONNECTION='192.0.2.1 12345 192.168.1.2 22'
-    curl() { printf '1.1.1.1'; }
+    mock_ip_response=1.1.1.1
     [[ $(detect_public_ipv4) == 1.1.1.1 ]]
     unset SSH_CONNECTION
     [[ $(detect_public_ipv4) == 1.1.1.1 ]]
-    curl() { printf '<html>unexpected response</html>'; }
+    mock_ip_response='<html>unexpected response</html>'
     if detect_public_ipv4; then exit 1; fi
-    curl() { printf '10.0.0.1'; }
+    mock_ip_response=10.0.0.1
     if detect_public_ipv4; then exit 1; fi
 
     # Replace terminal I/O only; exercise the real configuration and validation.
@@ -51,7 +66,7 @@ done
         IFS= read -r answer
         printf -v "$1" '%s' "${answer:-$3}"
     }
-    curl() { printf '1.1.1.1'; }
+    mock_ip_response=1.1.1.1
     LISTEN=127.0.0.1:8765 ADMIN_HOST=localhost SECURE_COOKIE=false
     configure_panel 3>/dev/null <<'INPUT'
 
@@ -66,7 +81,7 @@ INPUT
 panel.example.com
 INPUT
     [[ $ADMIN_HOST == panel.example.com && $LISTEN == 0.0.0.0:9000 ]]
-    curl() { return 1; }
+    mock_ip_response=
     configure_panel 3>/dev/null <<'INPUT'
 
 2
@@ -84,19 +99,4 @@ panel.example.com
 INPUT
     [[ $ADMIN_HOST == panel.example.com ]]
 )
-
-# Never source generated configuration as shell code.
-CONFIG_DIR=$(mktemp -d)
-trap 'rm -rf -- "$CONFIG_DIR"' EXIT
-printf '%s\n' 'TG_RELAY_LISTEN=127.0.0.1:9999' 'TG_RELAY_ADMIN_HOST=localhost' 'TG_RELAY_SECURE_COOKIE=false' "UNRECOGNIZED=\$(exit 66)" > "$CONFIG_DIR/panel.conf"
-read_configuration
-[[ $LISTEN == 127.0.0.1:9999 && $ADMIN_HOST == localhost && $SECURE_COOKIE == false ]]
-
-# Check checksum failure stops installation before any system changes.
-WORK_DIR=$CONFIG_DIR
-printf payload > "$WORK_DIR/test.tar.gz"
-(cd "$WORK_DIR" && sha256sum test.tar.gz > SHA256SUMS)
-verify_archive test.tar.gz
-printf tampered > "$WORK_DIR/test.tar.gz"
-if (verify_archive test.tar.gz) >/dev/null 2>&1; then exit 1; fi
 printf 'Installer input, config parsing and checksum checks passed.\n'
