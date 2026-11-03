@@ -11,6 +11,33 @@ import (
 	"time"
 )
 
+func suggestInboundPort(ctx context.Context, c *Config, listenIP string) (int, error) {
+	if net.ParseIP(listenIP) == nil {
+		return 0, errors.New("监听 IP 无效，请填写本机 IP、0.0.0.0 或 ::")
+	}
+	configured := make(map[int]bool, len(c.Inbounds))
+	for _, n := range c.Inbounds {
+		configured[n.Port] = true
+	}
+	for range 32 {
+		if err := ctx.Err(); err != nil {
+			return 0, err
+		}
+		listener, err := (&net.ListenConfig{}).Listen(ctx, "tcp", net.JoinHostPort(listenIP, "0"))
+		if err != nil {
+			return 0, errors.New("无法在此监听 IP 检测端口，请确认该地址属于本机且允许监听")
+		}
+		port := listener.Addr().(*net.TCPAddr).Port
+		if err := listener.Close(); err != nil {
+			return 0, err
+		}
+		if !configured[port] {
+			return port, nil
+		}
+	}
+	return 0, errors.New("暂未找到空闲 TCP 端口，请重试或手动填写")
+}
+
 func usablePublicHost(host string) bool {
 	if !validHost(host) || strings.EqualFold(host, "localhost") {
 		return false

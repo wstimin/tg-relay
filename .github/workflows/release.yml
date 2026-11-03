@@ -21,7 +21,7 @@ jobs:
         with:
           go-version-file: go.mod
       - run: go test -race ./... && go vet ./...
-      - run: node --check web/app.mjs && node scripts/test-web-update.mjs
+      - run: node --check web/app.mjs && node scripts/test-web-update.mjs && node scripts/test-web-forms.mjs
       - run: bash -n install.sh && bash scripts/test-install.sh && shellcheck install.sh scripts/test-install.sh scripts/test-admin.sh scripts/test-update.sh
       - name: Build release archives
         env:

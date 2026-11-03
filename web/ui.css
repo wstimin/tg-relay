@@ -132,9 +132,10 @@ th:first-child,td:first-child{padding-left:24px}th:last-child,td:last-child{padd
 .empty-state{padding:60px 20px;color:var(--muted);font-size:13px;text-align:center}.empty-state svg{margin:0 auto 12px;color:var(--accent)}.empty-state p{font-size:12px}
 
 /* Dialogs share theme tokens with their parent page. */
-.overlay{position:fixed;inset:0;z-index:40;display:flex;align-items:center;justify-content:center;padding:24px;background:var(--overlay);backdrop-filter:blur(5px);animation:fade-in 170ms var(--ease-out)}
-.dialog{display:flex;flex-direction:column;overflow:hidden;width:580px;max-width:100%;max-height:calc(100dvh - 48px);border:1px solid var(--line);border-radius:20px;background:var(--surface);box-shadow:var(--dialog-shadow),inset 0 1px 0 #ffffff0a;animation:dialog-in 200ms var(--ease-out)}
-.dialog[data-reused]{animation:none}
+.overlay{position:fixed;inset:0;z-index:40;display:flex;align-items:center;justify-content:center;padding:24px;background:var(--overlay);backdrop-filter:blur(5px)}
+.dialog{display:flex;flex-direction:column;overflow:hidden;width:580px;max-width:100%;max-height:calc(100dvh - 48px);border:1px solid var(--line);border-radius:20px;background:var(--surface);box-shadow:var(--dialog-shadow),inset 0 1px 0 #ffffff0a}
+.overlay[data-entry="pointer"]{animation:fade-in 170ms var(--ease-out)}
+.overlay[data-entry="pointer"]>.dialog:not([data-reused]){animation:dialog-in 200ms var(--ease-out)}
 .telegram-link{margin-right:auto;color:var(--accent);font-size:13px;text-decoration:underline;text-underline-offset:4px}
 .dialog-header{display:flex;align-items:flex-start;flex-shrink:0;gap:15px;margin-bottom:20px;padding:24px 26px 20px;border-bottom:1px solid var(--line-sub);background:var(--surface)}
 .dialog-header h2{font-size:19px;letter-spacing:-.4px}.dialog-header p{margin:7px 0 0;color:var(--muted);font-size:13px;line-height:1.8}.dialog-header>button{width:28px;min-height:28px;margin-left:auto;padding:5px;color:var(--muted)}
@@ -144,7 +145,7 @@ th:first-child,td:first-child{padding-left:24px}th:last-child,td:last-child{padd
 .switch-method{display:flex;gap:8px;margin:8px 0 0}.method-choice{flex:1;padding:12px;border:1px solid var(--line);border-radius:9px;background:var(--surface);font-size:13px;cursor:pointer}.method-choice:has(input:checked){border-color:var(--accent-line);background:var(--accent-bg)}
 .method-choice input{margin:0 6px 0 0;accent-color:var(--primary);vertical-align:middle}.method-choice small{display:block;margin:5px 0 0;color:var(--muted);font-size:12px;line-height:1.8}
 .info-message{display:flex;gap:8px;margin-top:16px;padding:12px 14px;border:1px solid var(--line);border-radius:10px;background:var(--inset);color:var(--muted);font-size:13px;line-height:1.85}.info-message>span:first-child{flex-shrink:0;margin-top:3px;color:var(--accent)}
-.form-grid{display:grid;grid-template-columns:1fr 1fr;gap:20px 16px}.form-field{min-width:0}.form-field.full{grid-column:1/-1}.form-field input,.form-field select,.form-field textarea{min-width:0;width:100%;height:44px;padding:10px 12px;border:1px solid var(--line);border-radius:10px;background:var(--inset);color:var(--text);font-size:14px;transition:border-color 150ms,box-shadow 150ms}.form-field input:focus,.form-field textarea:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-bg)}.form-field input[readonly]{color:var(--muted)}
+.form-grid{display:grid;grid-template-columns:1fr 1fr;gap:20px 16px}.form-field{min-width:0}.form-field.full{grid-column:1/-1}.form-field input,.form-field select,.form-field textarea{min-width:0;width:100%;height:44px;padding:10px 12px;border:1px solid var(--line);border-radius:10px;background:var(--inset);color:var(--text);font-size:14px;transition:border-color 150ms,box-shadow 150ms}.form-field input:focus,.form-field select:focus,.form-field textarea:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-bg)}.form-field input[readonly]{color:var(--muted)}
 .form-field textarea{height:auto;resize:vertical;line-height:1.8}.entry-detection{display:flex;align-items:center;gap:10px}.entry-detection .field-hint{margin:0}
 .field-hint{margin:6px 0 0;color:var(--muted);font-size:12px;line-height:1.7}.form-error{margin-top:12px;color:var(--red);font-size:12px}
 .node-dialog{width:680px;height:min(720px,calc(100dvh - 64px))}
@@ -209,7 +210,7 @@ body[data-authenticated="false"] .mobile-menu,body[data-authenticated="false"] .
 body[data-authenticated="false"] main{display:grid;align-items:center;max-width:1220px}
 body[data-authenticated="false"] .toast{left:50%}
 .auth-layout{display:grid;grid-template-columns:minmax(0,1fr) 420px;align-items:center;gap:72px;width:100%;max-width:1100px;margin:8px auto 16px;padding:12px 12px}
-.auth-intro{min-width:0;animation:auth-in 240ms var(--ease-out)}
+.auth-intro{min-width:0}
 .auth-brand{display:flex;align-items:center;gap:14px;margin-bottom:28px}
 .auth-brand .brand-mark{width:48px;height:48px;border-radius:15px}
 .auth-brand strong{display:block;font-size:25px;font-weight:700;letter-spacing:-.7px}
@@ -227,7 +228,7 @@ body[data-authenticated="false"] .toast{left:50%}
 .auth-connector{flex-shrink:0;color:var(--accent)}
 .auth-assurance{display:flex;align-items:center;gap:8px;margin-top:12px;color:var(--muted);font-size:13px}
 .auth-assurance>svg{color:var(--accent)}
-.auth-card{position:relative;align-self:center;padding:32px;border-radius:22px;background:var(--surface);box-shadow:var(--shadow-hover);animation:auth-in 240ms var(--ease-out)}
+.auth-card{position:relative;align-self:center;padding:32px;border-radius:22px;background:var(--surface);box-shadow:var(--shadow-hover)}
 .auth-card-icon{position:absolute;top:29px;right:30px;display:grid;place-items:center;width:40px;height:40px;border:1px solid var(--accent-line);border-radius:13px;background:var(--accent-bg);color:var(--accent)}
 .auth-card-eyebrow{margin-bottom:6px;color:var(--muted);font-size:11px;font-weight:600;letter-spacing:1.8px}
 .auth-card h2{font-size:28px;font-weight:700;letter-spacing:-.5px}
@@ -287,7 +288,7 @@ form[aria-busy="true"] .auth-submit>svg{display:none}
   .panel-title-row{padding:18px 16px;gap:16px}.panel-title-row h2{font-size:17px}.panel-title-row .subtext{font-size:12px}.table-toolbar{flex-basis:100%;gap:8px;min-width:0}.search-wrap{min-width:100px;max-width:none}.search-wrap input,.table-toolbar select{font-size:16px}.table-toolbar select{max-width:120px}.table-footer{flex-wrap:wrap;padding:14px 16px;font-size:11px}.page-footer{align-items:flex-start;padding:18px 15px;font-size:10px}.page-footer>span:last-child{white-space:nowrap}
   .overlay{padding:12px}.dialog{max-height:calc(100dvh - 24px);border-radius:13px}.dialog-header{margin-bottom:16px;padding:20px 18px 17px}.dialog-header h2{font-size:18px}.dialog-header p{font-size:12px}.dialog-body{padding:0 18px 20px}.dialog-footer{padding:13px 18px}.dialog-footer .muted{font-size:11px}.method-choice{padding:10px;font-size:12px}.method-choice small{font-size:12px}.node-dialog{height:min(720px,calc(100dvh - 32px))}.node-dialog .dialog-header{padding:20px 18px 17px}.detail-heading-icon{width:38px;height:38px}.toast{bottom:18px;font-size:12px}.outbound-card{padding:19px}.info-message{font-size:12px}.form-grid{gap:17px 12px}.form-field input,.form-field select,.form-field textarea{font-size:16px}.auth-card .form-field input{font-size:16px}.settings-section{padding:18px}
 }
-html[data-input="keyboard"] .dialog,html[data-input="keyboard"] .overlay,html[data-input="keyboard"] .auth-intro,html[data-input="keyboard"] .auth-card{animation:none}
+#content[data-entry="pointer"] .auth-intro,#content[data-entry="pointer"] .auth-card{animation:auth-in 240ms var(--ease-out)}
 html[data-input="keyboard"] button,html[data-input="keyboard"] .stat-card,html[data-input="keyboard"] .outbound-card,html[data-input="keyboard"] .route-detail,html[data-input="keyboard"] .detail-stat,html[data-input="keyboard"] .auth-network-node{transition:none}
 html[data-input="keyboard"] button:active{transform:none}
 @media(prefers-reduced-motion:reduce){*,*:before,*:after{animation:none!important;transition:none!important;scroll-behavior:auto!important}.stat-card:hover,.outbound-card:hover,.route-detail:hover,.detail-stat:hover,.auth-network-node:hover,button:active{transform:none}}

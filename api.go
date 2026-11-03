@@ -207,6 +207,19 @@ func (a *API) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		a.state(w)
 		return
 	}
+	if r.URL.Path == "/api/inbound-port" && r.Method == http.MethodGet {
+		listenIP := strings.TrimSpace(r.URL.Query().Get("listenIP"))
+		if listenIP == "" {
+			listenIP = "0.0.0.0"
+		}
+		port, err := suggestInboundPort(r.Context(), a.s.config.Load(), listenIP)
+		if err != nil {
+			failChange(w, err)
+			return
+		}
+		sendJSON(w, 200, map[string]any{"port": port, "listenIP": listenIP})
+		return
+	}
 	if r.URL.Path == "/api/inbound-defaults" && r.Method == http.MethodGet {
 		if a.entryDefaults == nil {
 			fail(w, 503, "自动识别暂不可用，请手动填写服务器公网地址")
