@@ -151,3 +151,7 @@ go build -trimpath -ldflags '-s -w' -o bin/tg-relay .
 ### v0.4.0 更新验证
 
 [正式发布验证](https://github.com/wstimin/tg-relay/actions/runs/41600972338) 已通过一次性 Linux 环境中的真实 HTTPS / systemd 更新：通过管理员 API 检查并提交更新，下载正式发布包，执行更新任务及重启，核对证书和端口不变、原账号仍能登录、旧会话失效，并逐项比较配置、用户密钥、路由和累计流量保持不变。证书使用本机测试证书并完整验证域名与 CA；不代表真实 CA 签发或用户服务器部署。三个正式安装包均已下载并通过 SHA256，Windows 包实际输出 v0.4.0。
+
+### v0.4.1 界面整改验证
+
+[v0.4.1](https://github.com/wstimin/tg-relay/releases/tag/v0.4.1) 直接替换原抽屉和登录页，提供居中节点详情、较亮的蓝灰暗色、清晰字体和轻微交互反馈，无新增依赖。[完整发布验证](https://github.com/wstimin/tg-relay/actions/runs/41610993736) 通过竞态、安装回归及上述真实 HTTPS / systemd 保留配置更新；本机浏览器核对亮暗主题、390px 手机布局、登录、键盘标签切换及未保存输入保护。仍未在用户服务器或真实 Telegram 客户端上验证。
