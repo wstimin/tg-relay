@@ -165,3 +165,7 @@ go build -trimpath -ldflags '-s -w' -o bin/tg-relay .
 ### v0.4.2 更新进度及菜单锁验证
 
 [v0.4.2](https://github.com/wstimin/tg-relay/releases/tag/v0.4.2) 增加真实下载字节进度、断线等待、就绪后自动刷新，并修复空闲 tg 菜单占用更新锁。[完整发布验证](https://github.com/wstimin/tg-relay/actions/runs/41614803381) 已在一次性 Linux 环境保持实际 tg 菜单在伪终端中等待输入，确认更新锁可获取，同时通过管理员 API / HTTPS / systemd 完成真实发布包更新及数据保留检查。前端回归覆盖非重叠轮询、断线 / 401、错误版本或未就绪禁止刷新、失败与超时；临时浏览器核对亮暗、手机进度及自动刷新。三个发布包均通过 SHA256，Windows 实际输出 v0.4.2。测试环境耗时不能代表用户服务器到 GitHub 的下载速度。
+
+### v0.4.3 瓷白墨青界面验证
+
+[v0.4.3](https://github.com/wstimin/tg-relay/releases/tag/v0.4.3) 按已批准设计统一整站亮暗主题，直接修改原组件并删除旧装饰和重复样式，无新依赖。[完整发布验证](https://github.com/wstimin/tg-relay/actions/runs/41621728225) 通过竞态、前端更新行为、安装回归及真实 HTTPS / systemd 保留数据更新；三个包均通过 SHA256，Windows 实际输出 v0.4.3。临时浏览器核对桌面 / 手机、主题记忆、搜索、直连入站创建、路由草稿保护及键盘标签切换；界面使用真实运行数据。未操作用户服务器或真实 Telegram 客户端。
