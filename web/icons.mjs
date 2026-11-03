@@ -9,8 +9,6 @@ const paths = {
   users:'<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2M22 21v-2a4 4 0 0 0-3-3.87"/><circle cx="9" cy="7" r="4"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>',
   logs:'<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/><path d="M14 2v6h6M8 13h8M8 17h5"/>',
   settings:'<path d="m9 3-.7 2.4-2.4 1L3.5 6 2 9l1.9 1.6v2.8L2 15l1.5 3 2.4-.4 2.4 1L9 21h6l.7-2.4 2.4-1 2.4.4 1.5-3-1.9-1.6v-2.8L22 9l-1.5-3-2.4.4-2.4-1L15 3Z"/><circle cx="12" cy="12" r="3"/>',
-  panel:'<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18"/>',
-  chevrons:'<path d="m9 9 3-3 3 3m-6 6 3 3 3-3"/>',
   layers:'<path d="m12 3 10 5-10 5L2 8Zm-10 9 10 5 10-5M2 16l10 5 10-5"/>',
   plus:'<path d="M12 5v14M5 12h14"/>',
   search:'<circle cx="10.5" cy="10.5" r="7"/><path d="m16 16 5 5"/>',

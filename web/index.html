@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="color-scheme" content="dark light">
   <title>TG Relay · 代理管理</title>
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='9' fill='%2318181b'/%3E%3Cpath d='m8 12 16-5-6 18-4-7-6-3 13-5-10 7' fill='white'/%3E%3C/svg%3E">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='9' fill='%23117568'/%3E%3Cpath d='m8 12 16-5-6 18-4-7-6-3 13-5-10 7' fill='white'/%3E%3C/svg%3E">
   <script src="./theme.js"></script>
   <link rel="stylesheet" href="./ui.css">
   <script type="module" src="./app.mjs"></script>
@@ -13,23 +13,21 @@
 <body data-authenticated="false">
   <a class="skip-link" href="#content">跳转到主要内容</a>
   <aside class="sidebar" aria-label="主要导航">
-    <a class="brand" href="#inbounds" aria-label="TG Relay 首页"><span class="brand-mark" data-icon="send"></span><span>TG Relay<small>Telegram 专用代理</small></span><span class="version" data-build-version>读取中</span></a>
-    <div class="workspace"><span class="workspace-avatar">T</span><span>我的工作空间<small>管理面板</small></span><span data-icon="chevrons" class="muted"></span></div>
-    <div class="nav-label">工作空间</div>
+    <a class="brand" href="#inbounds" aria-label="TG Relay 首页"><span class="brand-mark" data-icon="send"></span><span>TG Relay<small class="version" data-build-version>读取版本中</small></span></a>
+    <button type="button" class="workspace" data-action="go-settings" aria-label="工作空间设置"><span class="workspace-avatar">T</span><span>我的工作空间<small>管理面板</small></span><span data-icon="chevronRight" class="muted"></span></button>
     <nav id="navigation">
       <a href="#overview" data-page="overview"><span data-icon="overview"></span>运行概览</a>
       <a href="#inbounds" data-page="inbounds"><span data-icon="inbound"></span>入站节点<span class="nav-count" id="nav-count">0</span></a>
       <a href="#routes" data-page="routes"><span data-icon="routes"></span>路由管理</a>
       <a href="#outbounds" data-page="outbounds"><span data-icon="outbound"></span>落地出口</a>
       <a href="#users" data-page="users"><span data-icon="users"></span>用户管理</a>
-      <div class="nav-label second-label">管理</div>
       <a href="#logs" data-page="logs"><span data-icon="logs"></span>活动日志</a>
       <a href="#settings" data-page="settings"><span data-icon="settings"></span>面板设置</a>
     </nav>
-    <div class="sidebar-bottom"><div class="preview-note"><span data-icon="shield"></span><strong>入口固定，路由可调</strong><p>入站 → 路由 → 落地<br>调整出口，无需更换 TG 链接。</p></div><div class="profile"><span class="profile-avatar">A</span><span>Administrator<small>工作空间管理员</small></span><button type="button" class="icon-button ghost" data-action="logout" aria-label="退出登录"><span data-icon="outbound"></span></button></div></div>
+    <div class="sidebar-bottom"><div class="profile"><span class="profile-avatar">A</span><span class="profile-name">管理员<small>工作空间管理员</small></span><button type="button" class="icon-button ghost" data-action="go-settings" aria-label="面板设置"><span data-icon="settings"></span></button><button type="button" class="icon-button ghost" data-action="logout" aria-label="退出登录"><span data-icon="outbound"></span></button></div></div>
   </aside>
   <div class="shell">
-    <header class="topbar"><div class="breadcrumbs"><button class="icon-button mobile-menu" aria-label="展开导航" id="mobile-menu"><span data-icon="menu"></span></button><span data-icon="panel" class="desktop-panel"></span><span class="breadcrumb-divider"></span><span>工作空间</span><span class="slash">/</span><strong id="breadcrumb">入站节点</strong></div><div class="topbar-right"><div class="theme-switch" role="group" aria-label="切换外观"><button type="button" data-theme-option="light" aria-label="切换到浅色主题" aria-pressed="false"><span data-icon="sun"></span><span>浅色</span></button><button type="button" data-theme-option="dark" aria-label="切换到深色主题" aria-pressed="true"><span data-icon="moon"></span><span>深色</span></button></div><button type="button" class="ghost" id="update-notice" data-action="go-settings" hidden>新版本</button><span class="preview-pill"><span class="dot"></span>本地管理</span><span class="topbar-separator"></span><span class="avatar-small">A</span></div></header>
+    <header class="topbar"><div class="breadcrumbs"><button class="icon-button mobile-menu" aria-label="展开导航" id="mobile-menu"><span data-icon="menu"></span></button><span>工作空间</span><span class="slash">/</span><strong id="breadcrumb">入站节点</strong></div><div class="topbar-right"><div class="theme-switch" role="group" aria-label="切换外观"><button type="button" data-theme-option="light" aria-label="切换到浅色主题" aria-pressed="false"><span data-icon="sun"></span><span>浅色</span></button><button type="button" data-theme-option="dark" aria-label="切换到深色主题" aria-pressed="true"><span data-icon="moon"></span><span>深色</span></button></div><button type="button" class="ghost" id="update-notice" data-action="go-settings" hidden>新版本</button><button type="button" class="avatar-small" data-action="go-settings" aria-label="管理员面板设置">A</button></div></header>
     <main id="content" tabindex="-1"></main>
     <footer class="page-footer"><span>TG Relay <span class="footer-dot">·</span> 轻量连接，自在管理。</span><span data-build-version>读取版本中…</span></footer>
   </div>
