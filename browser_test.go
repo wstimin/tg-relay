@@ -103,7 +103,7 @@ func TestBrowserHarness(t *testing.T) {
 	t.Log("temporary browser fixture:", listener.Addr())
 	select {
 	case <-stop:
-	case <-time.After(10 * time.Minute):
+	case <-time.After(9 * time.Minute):
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
