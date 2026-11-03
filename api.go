@@ -11,6 +11,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"slices"
 	"strconv"
@@ -50,18 +51,58 @@ type loginAttempt struct {
 	AdminHash [32]byte
 }
 type API struct {
-	s             *Service
-	mu            sync.Mutex
-	sessions      map[[32]byte]loginSession
-	attempts      map[string]loginAttempt
-	adminHost     string
-	secureCookie  bool
-	updater       *panelUpdater
-	entryDefaults *inboundDefaults
+	s              *Service
+	mu             sync.Mutex
+	sessions       map[[32]byte]loginSession
+	attempts       map[string]loginAttempt
+	adminHost      string
+	secureCookie   bool
+	updater        *panelUpdater
+	entryDefaults  *inboundDefaults
+	trustedProxies []netip.Prefix
+	loginSlots     chan struct{}
 }
 
 func newAPI(s *Service, host string, secure bool) *API {
-	return &API{s: s, sessions: map[[32]byte]loginSession{}, attempts: map[string]loginAttempt{}, adminHost: host, secureCookie: secure, updater: newPanelUpdater("", false)}
+	return &API{s: s, sessions: map[[32]byte]loginSession{}, attempts: map[string]loginAttempt{}, adminHost: host, secureCookie: secure, updater: newPanelUpdater("", false), loginSlots: make(chan struct{}, 4)}
+}
+
+func (a *API) loginPeer(r *http.Request) (string, error) {
+	peer, err := netip.ParseAddrPort(r.RemoteAddr)
+	if err != nil {
+		return "", errors.New("无法识别登录来源")
+	}
+	ip := peer.Addr().Unmap()
+	trusted := func(ip netip.Addr) bool {
+		for _, prefix := range a.trustedProxies {
+			if prefix.Contains(ip) {
+				return true
+			}
+		}
+		return false
+	}
+	if !trusted(ip) {
+		return ip.String(), nil
+	}
+	forwarded := r.Header.Get("X-Forwarded-For")
+	if forwarded == "" {
+		forwarded = r.Header.Get("X-Real-IP")
+	}
+	chain := strings.Split(forwarded, ",")
+	if forwarded == "" || len(forwarded) > 1024 || len(chain) > 16 {
+		return "", errors.New("可信反向代理必须正确传递 X-Forwarded-For 或 X-Real-IP")
+	}
+	for i := len(chain) - 1; i >= 0; i-- {
+		ip, err = netip.ParseAddr(strings.TrimSpace(chain[i]))
+		if err != nil || ip.Zone() != "" {
+			return "", errors.New("反向代理来源地址无效")
+		}
+		ip = ip.Unmap()
+		if !trusted(ip) {
+			return ip.String(), nil
+		}
+	}
+	return ip.String(), nil
 }
 func sendJSON(w http.ResponseWriter, status int, value any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
@@ -365,7 +406,26 @@ func (a *API) login(w http.ResponseWriter, r *http.Request) {
 		fail(w, 405, "请求方式不支持")
 		return
 	}
-	peer, _, _ := net.SplitHostPort(r.RemoteAddr)
+	peer, err := a.loginPeer(r)
+	if err != nil {
+		fail(w, 400, err.Error())
+		return
+	}
+	var input struct {
+		Username string `json:"username"`
+		Password string `json:"password"`
+	}
+	if err := readJSON(r, &input); err != nil || len(input.Password) > 256 {
+		fail(w, 400, "登录信息无效")
+		return
+	}
+	select {
+	case a.loginSlots <- struct{}{}:
+		defer func() { <-a.loginSlots }()
+	default:
+		fail(w, 429, "登录繁忙，请稍后重试")
+		return
+	}
 	var currentHash []byte
 	if err := a.s.store.db.QueryRow("SELECT hash FROM admin WHERE id=1").Scan(&currentHash); err != nil {
 		if err == sql.ErrNoRows {
@@ -378,7 +438,7 @@ func (a *API) login(w http.ResponseWriter, r *http.Request) {
 	credentialRevision := sha256.Sum256(currentHash)
 	a.mu.Lock()
 	now := time.Now()
-	attempt := a.attempts[peer]
+	attempt, exists := a.attempts[peer]
 	if now.After(attempt.Until) || attempt.AdminHash != credentialRevision {
 		attempt = loginAttempt{Until: now.Add(10 * time.Minute), AdminHash: credentialRevision}
 	}
@@ -387,7 +447,7 @@ func (a *API) login(w http.ResponseWriter, r *http.Request) {
 		fail(w, 429, "登录尝试过多，请稍后再试")
 		return
 	}
-	if len(a.attempts) >= 1024 {
+	if !exists && len(a.attempts) >= 1024 {
 		for key, v := range a.attempts {
 			if now.After(v.Until) {
 				delete(a.attempts, key)
@@ -402,14 +462,6 @@ func (a *API) login(w http.ResponseWriter, r *http.Request) {
 	attempt.Count++
 	a.attempts[peer] = attempt
 	a.mu.Unlock()
-	var input struct {
-		Username string `json:"username"`
-		Password string `json:"password"`
-	}
-	if err := readJSON(r, &input); err != nil || len(input.Password) > 256 {
-		fail(w, 400, "登录信息无效")
-		return
-	}
 	adminHash, err := a.s.store.authenticateAdmin(input.Username, input.Password)
 	if err == sql.ErrNoRows {
 		fail(w, 409, "请先创建管理员")

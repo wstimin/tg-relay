@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/netip"
 	"runtime"
 	"strconv"
 	"sync"
@@ -27,6 +28,7 @@ type Session struct {
 	upstream                                                                   net.Conn
 	mu                                                                         sync.Mutex
 	closed                                                                     bool
+	handshakeIP                                                                string
 }
 
 func (s *Session) close() {
@@ -60,6 +62,12 @@ type Engine struct {
 	listeners    map[string]*listenerEntry
 	sessions     map[*Session]bool
 	handshakes   chan struct{}
+	pending      map[string]int
+	pendingTotal int
+	listenErrors map[string]string
+	failures     map[string]map[string]uint64
+	lastFailure  map[string]time.Time
+	preferredDC  map[string]string
 	wg           sync.WaitGroup
 	closing      bool
 	replayMu     sync.Mutex
@@ -70,6 +78,7 @@ type listenerPlan struct {
 	opened  map[string]*listenerEntry
 	keep    map[string]*listenerEntry
 	retired map[string]*listenerEntry
+	failed  map[string]string
 }
 
 func (p *listenerPlan) abort() {
@@ -78,7 +87,7 @@ func (p *listenerPlan) abort() {
 	}
 }
 func newEngine(s *Service) *Engine {
-	return &Engine{s: s, listeners: map[string]*listenerEntry{}, sessions: map[*Session]bool{}, handshakes: make(chan struct{}, 64), replays: map[[32]byte]time.Time{}}
+	return &Engine{s: s, listeners: map[string]*listenerEntry{}, sessions: map[*Session]bool{}, handshakes: make(chan struct{}, 64), pending: map[string]int{}, listenErrors: map[string]string{}, failures: map[string]map[string]uint64{}, lastFailure: map[string]time.Time{}, preferredDC: map[string]string{}, replays: map[[32]byte]time.Time{}}
 }
 func inboundAddress(n *Inbound) string { return net.JoinHostPort(n.ListenIP, strconv.Itoa(n.Port)) }
 func outboundFingerprint(o *Outbound) string {
@@ -86,13 +95,13 @@ func outboundFingerprint(o *Outbound) string {
 	sum := sha256.Sum256(b)
 	return hex.EncodeToString(sum[:])
 }
-func (e *Engine) prepare(c *Config) (*listenerPlan, error) {
+func (e *Engine) prepare(c *Config, partial bool) (*listenerPlan, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if e.closing {
 		return nil, errors.New("服务正在关闭")
 	}
-	p := &listenerPlan{opened: map[string]*listenerEntry{}, keep: map[string]*listenerEntry{}, retired: map[string]*listenerEntry{}}
+	p := &listenerPlan{opened: map[string]*listenerEntry{}, keep: map[string]*listenerEntry{}, retired: map[string]*listenerEntry{}, failed: map[string]string{}}
 	for _, n := range c.Inbounds {
 		if !n.Enabled {
 			continue
@@ -104,11 +113,17 @@ func (e *Engine) prepare(c *Config) (*listenerPlan, error) {
 		}
 		l, err := net.Listen("tcp", address)
 		if err != nil {
-			p.abort()
 			if errors.Is(err, syscall.EADDRINUSE) || (runtime.GOOS == "windows" && errors.Is(err, syscall.Errno(10048))) {
-				return nil, fmt.Errorf("端口 %d 已被占用，无法启动入站「%s」。请换一个空闲端口；面板与 TG 入站不能共用监听地址和端口: %w", n.Port, n.Name, err)
+				err = fmt.Errorf("端口 %d 已被占用，无法启动入站「%s」。请换一个空闲端口；面板与 TG 入站不能共用监听地址和端口: %w", n.Port, n.Name, err)
+			} else {
+				err = fmt.Errorf("无法监听入站 %s (%s): %w", n.Name, address, err)
 			}
-			return nil, fmt.Errorf("无法监听入站 %s (%s): %w", n.Name, address, err)
+			if partial {
+				p.failed[n.ID] = err.Error()
+				continue
+			}
+			p.abort()
+			return nil, err
 		}
 		p.opened[n.ID] = &listenerEntry{Listener: l, address: address}
 	}
@@ -121,6 +136,13 @@ func (e *Engine) prepare(c *Config) (*listenerPlan, error) {
 }
 func (e *Engine) apply(p *listenerPlan, c *Config, immediate bool) {
 	e.mu.Lock()
+	e.listenErrors = p.failed
+	for id := range e.failures {
+		if c.inbound(id) == nil {
+			delete(e.failures, id)
+			delete(e.lastFailure, id)
+		}
+	}
 	for id, l := range p.retired {
 		l.Close()
 		delete(e.listeners, id)
@@ -161,22 +183,67 @@ func (e *Engine) accept(id string, l *listenerEntry) {
 			_ = tcp.SetNoDelay(true)
 			_ = tcp.SetKeepAlive(true)
 		}
-		e.mu.Lock()
-		if e.closing || len(e.sessions) >= 4096 {
-			e.mu.Unlock()
+		peer, err := netip.ParseAddrPort(conn.RemoteAddr().String())
+		if err != nil {
 			conn.Close()
 			continue
 		}
-		session := &Session{InboundID: id, Address: l.address, client: conn}
+		ip := peer.Addr().Unmap().String()
+		e.mu.Lock()
+		// Limit unauthenticated work per source before allocating a handler goroutine.
+		if e.closing || len(e.sessions) >= 4096 || e.pending[ip] >= 16 || e.pendingTotal >= 128 {
+			e.mu.Unlock()
+			conn.Close()
+			e.failure(id, "握手限流")
+			continue
+		}
+		e.pending[ip]++
+		e.pendingTotal++
+		session := &Session{InboundID: id, Address: l.address, client: conn, handshakeIP: ip}
 		e.sessions[session] = true
 		e.wg.Add(1)
 		e.mu.Unlock()
 		go func() {
 			defer e.wg.Done()
 			defer session.close()
+			defer e.finishHandshake(session)
 			defer func() { e.mu.Lock(); delete(e.sessions, session); e.mu.Unlock() }()
 			e.serve(session)
 		}()
+	}
+}
+
+func (e *Engine) finishHandshake(session *Session) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if ip := session.handshakeIP; ip != "" {
+		e.pending[ip]--
+		if e.pending[ip] == 0 {
+			delete(e.pending, ip)
+		}
+		e.pendingTotal--
+		session.handshakeIP = ""
+	}
+}
+
+// Aggregate failures without logging client payloads, secrets or one event per packet.
+func (e *Engine) failure(id, stage string) {
+	e.mu.Lock()
+	if e.s.config.Load().inbound(id) == nil || e.closing {
+		e.mu.Unlock()
+		return
+	}
+	if e.failures[id] == nil {
+		e.failures[id] = map[string]uint64{}
+	}
+	e.failures[id][stage]++
+	report := time.Since(e.lastFailure[id]) >= 30*time.Second
+	if report {
+		e.lastFailure[id] = time.Now()
+	}
+	e.mu.Unlock()
+	if report {
+		e.s.addEvent("warn", "入站连接异常", "入站 "+id+" · "+stage+"；同类错误计数可在节点详情查看")
 	}
 }
 
@@ -197,9 +264,14 @@ func (c *capturedConn) Read(p []byte) (int, error) {
 	return n, err
 }
 func (e *Engine) serve(session *Session) {
+	wait := time.NewTimer(2 * time.Second)
+	defer wait.Stop()
 	select {
 	case e.handshakes <- struct{}{}:
-	default:
+	case <-wait.C:
+		e.failure(session.InboundID, "握手排队超时")
+		return
+	case <-e.s.ctx.Done():
 		return
 	}
 	handshakeHeld := true
@@ -227,22 +299,27 @@ func (e *Engine) serve(session *Session) {
 	captured := &capturedConn{Conn: session.client}
 	hello, index, err := fake.ReadClientHello(captured, keys, n.TLSDomain, 5*time.Minute)
 	if err != nil {
+		e.failure(n.ID, "客户端认证失败或握手超时")
 		e.mask(session, *n, captured.data.Bytes())
 		return
 	}
 	if !e.replayAccept(hello.Random) {
+		e.failure(n.ID, "重复握手")
 		return
 	}
 	cr := credentials[index]
 	if !e.s.allowed(cr.UserID, cr.ID, n.ID) {
+		e.failure(n.ID, "用户权限失效")
 		return
 	}
 	if err = fake.SendServerHello(session.client, keys[index], hello); err != nil {
+		e.failure(n.ID, "握手响应失败")
 		return
 	}
 	tlsConn := tlsrecord.New(session.client, true, true)
 	dc, client, err := (obfuscation.Obfuscator{Secret: keys[index]}).ReadHandshake(tlsConn)
 	if err != nil {
+		e.failure(n.ID, "混淆握手失败")
 		return
 	}
 	// Resolve and publish the session together so an immediate route update cannot miss a handshake.
@@ -251,6 +328,7 @@ func (e *Engine) serve(session *Session) {
 	r, o, err := cfg.resolve(n.ID)
 	if err != nil {
 		e.mu.Unlock()
+		e.failure(n.ID, "路由不可用")
 		return
 	}
 	session.UserID = cr.UserID
@@ -259,19 +337,11 @@ func (e *Engine) serve(session *Session) {
 	session.RouteID = r.ID
 	session.Fingerprint = outboundFingerprint(o)
 	e.mu.Unlock()
-	ctx, cancel := context.WithTimeout(e.s.ctx, 10*time.Second)
-	var upstream net.Conn
-	for _, address := range dcAddresses(dc) {
-		upstream, err = dialOutbound(ctx, *o, address)
-		if err == nil {
-			break
-		}
-		if ctx.Err() != nil {
-			break
-		}
-	}
+	ctx, cancel := context.WithTimeout(e.s.ctx, 8*time.Second)
+	upstream, err := e.dialDC(ctx, *o, dc)
 	cancel()
-	if upstream == nil {
+	if err != nil {
+		e.failure(n.ID, "落地或 Telegram DC 连接失败")
 		return
 	}
 	if !session.setUpstream(upstream) {
@@ -280,6 +350,7 @@ func (e *Engine) serve(session *Session) {
 	_ = upstream.SetDeadline(time.Now().Add(8 * time.Second))
 	remote, err := (obfuscation.Obfuscator{}).SendHandshake(upstream, dc)
 	if err != nil {
+		e.failure(n.ID, "Telegram DC 握手写入失败")
 		return
 	}
 	if !e.s.allowed(cr.UserID, cr.ID, n.ID) {
@@ -289,6 +360,7 @@ func (e *Engine) serve(session *Session) {
 	_ = session.client.SetDeadline(time.Time{})
 	<-e.handshakes
 	handshakeHeld = false
+	e.finishHandshake(session)
 	done := make(chan struct{})
 	go func() { e.transfer(session, remote, client, true); session.close(); close(done) }()
 	e.transfer(session, client, remote, false)
@@ -352,6 +424,7 @@ func (e *Engine) mask(session *Session, n Inbound, prefix []byte) {
 	defer cancel()
 	remote, err := dialOutbound(ctx, *o, net.JoinHostPort(n.TLSDomain, "443"))
 	if err != nil {
+		e.failure(n.ID, "伪装网站连接失败")
 		return
 	}
 	defer remote.Close()
@@ -420,7 +493,10 @@ func (e *Engine) snapshot() map[string]any {
 			status = "paused"
 		} else if e.listeners[n.ID] == nil {
 			status = "offline"
-			message = "入站监听未启动"
+			message = e.listenErrors[n.ID]
+			if message == "" {
+				message = "入站监听未启动"
+			}
 		} else if routeErr != nil {
 			status = "warning"
 			message = routeErr.Error()
@@ -432,7 +508,11 @@ func (e *Engine) snapshot() map[string]any {
 		if o != nil {
 			outboundID = o.ID
 		}
-		state[n.ID] = map[string]any{"connections": count, "retiringConnections": old, "status": status, "error": message, "routeID": routeID, "outboundID": outboundID}
+		failures := map[string]uint64{}
+		for stage, count := range e.failures[n.ID] {
+			failures[stage] = count
+		}
+		state[n.ID] = map[string]any{"connections": count, "retiringConnections": old, "status": status, "error": message, "routeID": routeID, "outboundID": outboundID, "failures": failures}
 	}
 	return state
 }
@@ -446,26 +526,4 @@ func (e *Engine) ready() bool {
 		}
 	}
 	return !e.closing
-}
-
-// Seed addresses follow Telegram Desktop / mtg. Negative identifiers retain media intent in the handshake.
-func dcAddresses(dc int) []string {
-	if dc < 0 {
-		dc = -dc
-	}
-	switch dc {
-	case 1:
-		return []string{"149.154.175.50:443", "[2001:b28:f23d:f001::a]:443"}
-	case 2:
-		return []string{"149.154.167.51:443", "95.161.76.100:443", "[2001:67c:04e8:f002::a]:443"}
-	case 3:
-		return []string{"149.154.175.100:443", "[2001:b28:f23d:f003::a]:443"}
-	case 4:
-		return []string{"149.154.167.91:443", "[2001:67c:04e8:f004::a]:443"}
-	case 5:
-		return []string{"149.154.171.5:443", "[2001:b28:f23f:f005::a]:443"}
-	case 203:
-		return []string{"91.105.192.100:443", "[2a0a:f280:203:a:5000::100]:443"}
-	}
-	return nil
 }

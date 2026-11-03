@@ -5,11 +5,14 @@ REPOSITORY=wstimin/tg-relay
 INSTALL_DIR=/opt/tg-relay
 DATA_DIR=/var/lib/tg-relay
 CONFIG_DIR=/etc/tg-relay
-UNIT=/etc/systemd/system/tg-relay.service
+SYSTEMD_DIR=/etc/systemd/system
+UNIT=$SYSTEMD_DIR/tg-relay.service
 MENU_COMMAND=/usr/local/bin/tg
 ACME_HOME=/etc/tg-relay/acme
 WORK_DIR=
-RESTART_ON_ERROR=0
+ROLLBACK_DIR=
+ROLLBACK_PATHS=()
+PREVIOUS_ACTIVE=0
 VERSION=
 LOCK_FILE=/run/tg-relay-install.lock
 PENDING_CERT_DOMAIN=
@@ -65,9 +68,48 @@ cleanup() {
     local code=$?
     trap - EXIT
     unset ADMIN_PASSWORD PASSWORD_CONFIRM
-    if ((code != 0 && RESTART_ON_ERROR)); then systemctl start tg-relay.service || true; fi
+    if ((code != 0)) && [[ -n $ROLLBACK_DIR ]]; then
+        if ! rollback_install; then
+            printf '原安装恢复未完成；临时恢复材料保留在 %s，数据库和面板配置未删除。\n' "$WORK_DIR" >&2
+            WORK_DIR=
+        fi
+    fi
     if [[ -n $WORK_DIR && $WORK_DIR == /tmp/tg-relay.* && -d $WORK_DIR ]]; then rm -rf -- "$WORK_DIR"; fi
     exit "$code"
+}
+begin_install_transaction() {
+    local path index=0 snapshot_dir=$WORK_DIR/rollback
+    ROLLBACK_PATHS=("$INSTALL_DIR/tg-relay" "$INSTALL_DIR/manage.sh" "$INSTALL_DIR/LICENSE.mtg" "$INSTALL_DIR/THIRD_PARTY_NOTICES.md" "$INSTALL_DIR/version" "$UNIT" "$SYSTEMD_DIR/tg-relay-renew.service" "$SYSTEMD_DIR/tg-relay-renew.timer" "$SYSTEMD_DIR/tg-relay-update.service" "$SYSTEMD_DIR/tg-relay-update.path")
+    mkdir -p "$snapshot_dir"
+    printf '%s\n' "${ROLLBACK_PATHS[@]}" > "$snapshot_dir/paths"
+    for path in "${ROLLBACK_PATHS[@]}"; do
+        [[ ! -L $path ]] || die "安装文件不能是符号链接：$path"
+        if [[ -f $path ]]; then cp -p -- "$path" "$snapshot_dir/$index"; fi
+        index=$((index+1))
+    done
+    ROLLBACK_DIR=$snapshot_dir
+}
+rollback_install() {
+    local path index=0 failed=0
+    printf '更新未通过，正在恢复原程序和服务文件…\n' >&2
+    systemctl stop tg-relay.service || failed=1
+    for path in "${ROLLBACK_PATHS[@]}"; do
+        if [[ -f $ROLLBACK_DIR/$index ]]; then
+            cp -p -- "$ROLLBACK_DIR/$index" "$path" || failed=1
+        else
+            rm -f -- "$path" || failed=1
+        fi
+        index=$((index+1))
+    done
+    systemctl daemon-reload || failed=1
+    if ((PREVIOUS_ACTIVE)); then
+        systemctl start tg-relay.service || failed=1
+        wait_panel || failed=1
+    fi
+    ROLLBACK_DIR=
+    ROLLBACK_PATHS=()
+    if ((failed)); then return 1; fi
+    printf '已恢复原程序、服务文件及原服务运行状态。\n' >&2
 }
 safe_paths() {
     local path
@@ -188,12 +230,16 @@ show_panel() {
     printf '请放行面板端口；TG 入站端口在面板单独配置和放行。\n'
 }
 wait_panel() {
-    local port=${LISTEN##*:}
+    local port=${LISTEN##*:} response expected=${1:-}
+    if [[ -z $expected ]]; then expected=$("$INSTALL_DIR/tg-relay" -version) || return 1; fi
     for _ in {1..20}; do
         if systemctl is-active --quiet tg-relay.service; then
             if [[ -n $TLS_CERT ]]; then
-                if curl --fail --silent --noproxy '*' --cacert "$TLS_CERT" --resolve "$ADMIN_HOST:$port:127.0.0.1" --connect-timeout 1 --max-time 2 "https://$ADMIN_HOST:$port/api/auth" >/dev/null; then return; fi
-            elif curl --fail --silent --noproxy '*' --connect-timeout 1 --max-time 2 "http://127.0.0.1:$port/api/auth" >/dev/null; then return; fi
+                response=$(curl --fail --silent --noproxy '*' --cacert "$TLS_CERT" --resolve "$ADMIN_HOST:$port:127.0.0.1" --connect-timeout 1 --max-time 2 "https://$ADMIN_HOST:$port/api/auth") || response=
+            else
+                response=$(curl --fail --silent --noproxy '*' --connect-timeout 1 --max-time 2 "http://127.0.0.1:$port/api/auth") || response=
+            fi
+            if [[ $response == *'"version":"'"$expected"'"'* && $response == *'"ready":true'* ]]; then return; fi
         fi
         sleep 1
     done
@@ -440,7 +486,9 @@ install_release() {
         ADMIN_USER=$("$WORK_DIR/tg-relay" -admin-username -data "$DATA_DIR")
     fi
     systemctl is-active --quiet tg-relay.service && active=1
-    if ((active)); then systemctl stop tg-relay.service; RESTART_ON_ERROR=1; fi
+    PREVIOUS_ACTIVE=$active
+    if ((existing)); then begin_install_transaction; fi
+    if ((active)); then systemctl stop tg-relay.service; fi
     [[ -z $(ss -H -ltn "( sport = :$PANEL_PORT )") ]] || die "端口 $PANEL_PORT 已被其他程序占用"
     if ! id tg-relay >/dev/null 2>&1; then useradd --system --user-group --home-dir "$DATA_DIR" --shell /usr/sbin/nologin tg-relay; fi
     if [[ -n $admin_action ]]; then
@@ -456,7 +504,7 @@ install_release() {
     install -m 0755 "$WORK_DIR/install.sh" "$INSTALL_DIR/manage.sh"
     install -d -m 0755 "$(dirname "$MENU_COMMAND")"
     if [[ ! -L $MENU_COMMAND ]]; then ln -s "$INSTALL_DIR/manage.sh" "$MENU_COMMAND"; fi
-    install -m 0644 "$WORK_DIR/tg-relay-renew.service" "$WORK_DIR/tg-relay-renew.timer" "$WORK_DIR/tg-relay-update.service" "$WORK_DIR/tg-relay-update.path" /etc/systemd/system/
+    install -m 0644 "$WORK_DIR/tg-relay-renew.service" "$WORK_DIR/tg-relay-renew.timer" "$WORK_DIR/tg-relay-update.service" "$WORK_DIR/tg-relay-update.path" "$SYSTEMD_DIR/"
     if ((existing == 0)); then
         if [[ -n $TLS_CERT ]]; then activate_certificate; fi
         write_configuration
@@ -467,11 +515,12 @@ install_release() {
     if ((existing == 0)) && [[ -n $TLS_CERT ]]; then certificate_deploy; configure_renewal; fi
     systemctl daemon-reload
     systemctl enable --now tg-relay-update.path
-    systemctl enable tg-relay.service
+    if ((existing == 0)); then systemctl enable tg-relay.service; fi
     systemctl restart tg-relay.service
-    RESTART_ON_ERROR=0
-    if wait_panel; then
+    if wait_panel "$version"; then
         systemctl is-active --quiet tg-relay-update.path || die '面板已更新，但更新监视组件未启动，请运行 systemctl status tg-relay-update.path --no-pager 检查'
+        ROLLBACK_DIR=
+        ROLLBACK_PATHS=()
         printf '\n安装完成，服务已响应。版本：%s\n管理员用户名：%s\n以后输入 tg 打开管理菜单。\n' "$version" "$ADMIN_USER"
         show_panel
         return
@@ -488,7 +537,7 @@ uninstall() {
     systemctl disable --now tg-relay.service || true
     systemctl disable --now tg-relay-renew.timer || true
     rm -f -- "$UNIT" "$INSTALL_DIR/tg-relay" "$INSTALL_DIR/version" "$INSTALL_DIR/LICENSE.mtg" "$INSTALL_DIR/THIRD_PARTY_NOTICES.md" "$CONFIG_DIR/panel.conf" "$DATA_DIR/update-request" "$DATA_DIR/update-status.json"
-    rm -f -- "$INSTALL_DIR/manage.sh" "$MENU_COMMAND" /etc/systemd/system/tg-relay-renew.service /etc/systemd/system/tg-relay-renew.timer /etc/systemd/system/tg-relay-update.service /etc/systemd/system/tg-relay-update.path
+    rm -f -- "$INSTALL_DIR/manage.sh" "$MENU_COMMAND" "$SYSTEMD_DIR/tg-relay-renew.service" "$SYSTEMD_DIR/tg-relay-renew.timer" "$SYSTEMD_DIR/tg-relay-update.service" "$SYSTEMD_DIR/tg-relay-update.path"
     rmdir -- "$INSTALL_DIR" "$CONFIG_DIR" 2>/dev/null || true
     systemctl daemon-reload
     printf '程序已卸载，数据及系统用户保留：%s\n' "$DATA_DIR"

@@ -22,6 +22,8 @@ type Service struct {
 	healthMu     sync.Mutex
 	health       map[string]Health
 	engine       *Engine
+	dcs          *dcDirectory
+	workers      sync.WaitGroup
 	started      time.Time
 	ctx          context.Context
 	cancel       context.CancelFunc
@@ -39,15 +41,35 @@ func newService(store *Store) (*Service, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	s := &Service{store: store, usage: usage, reserved: map[string]int64{}, events: events, health: map[string]Health{}, started: time.Now(), ctx: ctx, cancel: cancel, done: make(chan struct{})}
 	s.config.Store(c)
+	s.dcs = newDCDirectory(store)
 	s.engine = newEngine(s)
-	plan, err := s.engine.prepare(c)
-	if err != nil {
-		s.addEvent("error", "入站启动失败", err.Error())
-	} else {
-		s.engine.apply(plan, c, false)
-	}
+	s.reconcileListeners()
 	go s.background()
 	return s, nil
+}
+
+func (s *Service) reconcileListeners() {
+	s.updateMu.Lock()
+	defer s.updateMu.Unlock()
+	c := s.config.Load()
+	plan, err := s.engine.prepare(c, true)
+	if err != nil {
+		return
+	}
+	s.engine.mu.Lock()
+	previous := s.engine.listenErrors
+	s.engine.mu.Unlock()
+	s.engine.apply(plan, c, false)
+	for id, message := range plan.failed {
+		if previous[id] != message {
+			s.addEvent("error", "入站监听失败", message)
+		}
+	}
+	for id := range previous {
+		if plan.opened[id] != nil {
+			s.addEvent("info", "入站监听恢复", "入站 "+id+" 已重新监听")
+		}
+	}
 }
 func (s *Service) addEvent(level, title, detail string) {
 	e := Event{Time: time.Now().UTC(), Level: level, Title: title, Detail: detail}
@@ -71,7 +93,7 @@ func (s *Service) update(change func(*Config) error, immediate bool) error {
 	if err := validateConfig(next); err != nil {
 		return err
 	}
-	plan, err := s.engine.prepare(next)
+	plan, err := s.engine.prepare(next, false)
 	if err != nil {
 		return err
 	}
@@ -168,11 +190,17 @@ func (s *Service) background() {
 	defer tick.Stop()
 	flushTick := time.NewTicker(2 * time.Second)
 	defer flushTick.Stop()
+	listenTick := time.NewTicker(30 * time.Second)
+	defer listenTick.Stop()
 	last := s.usageSnapshot()["total:all"]
 	for {
 		select {
 		case <-s.ctx.Done():
 			return
+		case <-listenTick.C:
+			if !s.engine.ready() {
+				s.reconcileListeners()
+			}
 		case <-tick.C:
 			s.engine.closeUnauthorized()
 			now := s.usageSnapshot()["total:all"]
@@ -188,7 +216,13 @@ func (s *Service) background() {
 		}
 	}
 }
-func (s *Service) close() error { s.cancel(); s.engine.close(); <-s.done; return s.flush() }
+func (s *Service) close() error {
+	s.cancel()
+	s.engine.close()
+	<-s.done
+	s.workers.Wait()
+	return s.flush()
+}
 func (s *Service) probe(id string) (Health, error) {
 	o := s.config.Load().outbound(id)
 	if o == nil {
@@ -197,7 +231,7 @@ func (s *Service) probe(id string) (Health, error) {
 	ctx, cancel := context.WithTimeout(s.ctx, 10*time.Second)
 	defer cancel()
 	started := time.Now()
-	conn, err := dialOutbound(ctx, *o, "149.154.167.51:443")
+	conn, err := s.engine.dialDC(ctx, *o, 2)
 	h := Health{Healthy: err == nil, LatencyMS: time.Since(started).Milliseconds(), TestedAt: time.Now().UTC()}
 	if conn != nil {
 		conn.Close()
@@ -224,10 +258,16 @@ func (s *Service) probeInbound(id string) ([]Health, error) {
 		return nil, err
 	}
 	checks := make([]Health, 0, 2)
-	for _, target := range []string{dcAddresses(2)[0], net.JoinHostPort(n.TLSDomain, "443")} {
+	for _, target := range []string{"", net.JoinHostPort(n.TLSDomain, "443")} {
 		ctx, cancel := context.WithTimeout(s.ctx, 8*time.Second)
 		started := time.Now()
-		conn, err := dialOutbound(ctx, *o, target)
+		var conn net.Conn
+		var err error
+		if target == "" {
+			conn, err = s.engine.dialDC(ctx, *o, 2)
+		} else {
+			conn, err = dialOutbound(ctx, *o, target)
+		}
 		h := Health{Healthy: err == nil, LatencyMS: time.Since(started).Milliseconds(), TestedAt: time.Now().UTC()}
 		if conn != nil {
 			conn.Close()

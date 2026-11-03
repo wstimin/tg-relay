@@ -10,9 +10,11 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -34,6 +36,7 @@ func run() error {
 	dataDir := flag.String("data", "data", "SQLite 数据目录")
 	adminHost := flag.String("admin-host", "", "允许访问管理面板的额外主机名，例如 panel.example.com")
 	secureCookie := flag.Bool("secure-cookie", false, "经 HTTPS 反向代理访问时启用安全 Cookie")
+	trustedProxies := flag.String("trusted-proxies", "", "可信反向代理 IP/CIDR，逗号分隔；只信任这些来源传递的客户端地址")
 	initAdmin := flag.Bool("init-admin", false, "从标准输入读取密码并首次创建管理员后退出")
 	resetAdmin := flag.Bool("reset-admin", false, "从标准输入读取新密码并重置管理员；保留代理配置和流量")
 	verifyAdmin := flag.Bool("verify-admin", false, "从标准输入读取密码并验证管理员凭据后退出")
@@ -116,7 +119,21 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	service.startDCUpdates()
 	api := newAPI(service, *adminHost, *secureCookie)
+	if *trustedProxies == "" && *secureCookie && tlsConfig == nil && loopbackHost(*listen) {
+		*trustedProxies = "127.0.0.1/32,::1/128"
+	}
+	if *trustedProxies != "" {
+		for _, value := range strings.Split(*trustedProxies, ",") {
+			prefix, err := netip.ParsePrefix(strings.TrimSpace(value))
+			if err != nil {
+				_ = service.close()
+				return fmt.Errorf("可信反向代理 CIDR 无效：%s", value)
+			}
+			api.trustedProxies = append(api.trustedProxies, prefix.Masked())
+		}
+	}
 	api.updater = newPanelUpdater(*dataDir, *managedUpdates)
 	api.entryDefaults = &inboundDefaults{lookup: lookupPublicIP}
 	web, _ := fs.Sub(assets, "web")

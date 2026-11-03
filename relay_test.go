@@ -183,7 +183,7 @@ func mockSOCKS(t *testing.T, tag, password string) (Outbound, <-chan string) {
 }
 
 // Construct a client from an upstream captured ClientHello, with independent HMAC verification.
-func connectTG(t *testing.T, s *Service) net.Conn {
+func connectTG(t *testing.T, s *Service, sourceIP ...string) net.Conn {
 	t.Helper()
 	fixture, err := os.ReadFile("internal/mtproto/fake/testdata/client-hello-ok-19dfe38384b9884b.json")
 	if err != nil {
@@ -205,7 +205,11 @@ func connectTG(t *testing.T, s *Service) net.Conn {
 	binary.LittleEndian.PutUint32(random[28:], binary.LittleEndian.Uint32(random[28:])^uint32(time.Now().Unix()))
 	copy(packet[11:43], random)
 	n := s.config.Load().Inbounds[0]
-	conn, err := net.DialTimeout("tcp", inboundAddress(&n), 2*time.Second)
+	dialer := net.Dialer{Timeout: 2 * time.Second}
+	if len(sourceIP) > 0 {
+		dialer.LocalAddr = &net.TCPAddr{IP: net.ParseIP(sourceIP[0])}
+	}
+	conn, err := dialer.Dial("tcp", inboundAddress(&n))
 	if err != nil {
 		t.Fatal(err)
 	}

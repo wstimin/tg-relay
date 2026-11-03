@@ -114,8 +114,8 @@ INPUT
     # An existing installation must never call any settings/password prompt.
     fixture=$(mktemp -d)
     trap 'rm -rf -- "$fixture"; if [[ -n $WORK_DIR && $WORK_DIR == /tmp/tg-relay.* ]]; then rm -rf -- "$WORK_DIR"; fi' EXIT
-    INSTALL_DIR=$fixture/installed DATA_DIR=$fixture/data CONFIG_DIR=$fixture/config UNIT=$fixture/main.service MENU_COMMAND=$fixture/tg
-    mkdir -p "$INSTALL_DIR" "$DATA_DIR" "$CONFIG_DIR" "$fixture/package"
+    INSTALL_DIR=$fixture/installed DATA_DIR=$fixture/data CONFIG_DIR=$fixture/config SYSTEMD_DIR=$fixture/systemd UNIT=$fixture/main.service MENU_COMMAND=$fixture/tg
+    mkdir -p "$INSTALL_DIR" "$DATA_DIR" "$CONFIG_DIR" "$SYSTEMD_DIR" "$fixture/package"
     cat > "$fixture/package/tg-relay" <<'MOCK'
 #!/usr/bin/env bash
 case "$1" in -version) printf '%s' "${MOCK_VERSION:-v0.4.0}";; -admin-status) printf initialized;; -admin-username) printf retained-admin;; *) exit 1;; esac
@@ -136,7 +136,10 @@ MOCK
     systemctl() { return 0; }
     ss() { return 0; }
     id() { return 0; }
-    install() { return 0; }
+    install() {
+        # Copy real fixture files without platform-specific directory chmod behavior.
+        if [[ $1 == -d ]]; then shift 3; mkdir -p -- "$@"; else shift 2; cp -- "$@"; fi
+    }
     ln() { return 0; }
     chown() { return 0; }
     wait_panel() { return 0; }
@@ -165,5 +168,42 @@ MOCK
     # Refuse a mismatched binary before changing installed files or service state.
     VERSION=v0.9.9
     if (install_release) >/dev/null 2>&1; then printf 'Wrong binary version accepted\n'; exit 1; fi
+
+    # Exercise the real EXIT recovery after files have been replaced.
+    MOCK_VERSION=v0.4.3
+    VERSION=v0.4.3
+    systemctl() {
+        if [[ $MOCK_FAULT == restart && $1 == restart ]]; then return 37; fi
+        if [[ $MOCK_FAULT == watcher && $1 == is-active && ${!#} == tg-relay-update.path ]]; then return 38; fi
+        return 0
+    }
+    wait_panel() { [[ $MOCK_FAULT != ready || $(cat "$INSTALL_DIR/version") != v0.4.3 ]]; }
+    journalctl() { return 0; }
+    for MOCK_FAULT in restart ready watcher; do
+        printf '\n# original binary marker\n' >> "$INSTALL_DIR/tg-relay"
+        retained=$(sha256sum "$INSTALL_DIR/tg-relay" "$INSTALL_DIR/manage.sh" "$UNIT" "$INSTALL_DIR/version" "$CONFIG_DIR/panel.conf")
+        set +e
+        (
+            set -Eeuo pipefail
+            trap cleanup EXIT
+            install_release
+        )
+        fault_status=$?
+        set -e
+        [[ $fault_status != 0 && $(sha256sum "$INSTALL_DIR/tg-relay" "$INSTALL_DIR/manage.sh" "$UNIT" "$INSTALL_DIR/version" "$CONFIG_DIR/panel.conf") == "$retained" ]] || { printf 'Update failure did not restore files: %s\n' "$MOCK_FAULT"; exit 1; }
+    done
+)
+(
+    # HTTP 200 alone is not a successful install: version and all listeners must match.
+    LISTEN=127.0.0.1:8765 TLS_CERT='' ADMIN_HOST=localhost
+    systemctl() { return 0; }
+    sleep() { return 0; }
+    curl() { printf '%s' "$mock_auth"; }
+    mock_auth='{"version":"v0.4.4","ready":false}'
+    if wait_panel v0.4.4; then printf 'Offline TG listeners reported ready\n'; exit 1; fi
+    mock_auth='{"version":"v0.4.3","ready":true}'
+    if wait_panel v0.4.4; then printf 'Wrong running version accepted\n'; exit 1; fi
+    mock_auth='{"version":"v0.4.4","ready":true}'
+    wait_panel v0.4.4
 )
 printf 'Installer input, config parsing and checksum checks passed.\n'
