@@ -31,7 +31,7 @@ Fake TLS 域名填写真实存在、经落地可访问的 HTTPS 主机。服务�
 
 ## Linux 部署
 
-支持 systemd Linux amd64 / arm64。纯 Go 构建，无 CGO 运行库依赖。首次发布完成后，在服务器 SSH 终端执行交互式安装器：
+支持 systemd Linux amd64 / arm64。纯 Go 构建，无 CGO 运行库依赖。在服务器 SSH 终端执行交互式安装器：
 
 ```sh
 curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' https://raw.githubusercontent.com/wstimin/tg-relay/main/install.sh | sudo bash
@@ -41,7 +41,7 @@ curl --fail --silent --show-error --location --proto '=https' --proto-redir '=ht
 
 安装器还提供更新、服务状态及日志、卸载程序等菜单。卸载会保留数据库。已存在管理员账户时，更新不会更改账号、密钥和流量数据。
 
-此命令要等 GitHub 首个 `v0.1.0` Release 发布成功后才能安装；发布工作流会自动附上 Linux amd64 / arm64、Windows amd64 二进制包及 SHA256 校验文件。
+每个 Release 提供 Linux amd64 / arm64、Windows amd64 二进制包及 SHA256 校验文件。发布流程支持版本标签触发，也可以在 GitHub Actions 中手动选择已有版本标签发布。
 
 默认面板仅监听回环地址；通过 SSH 隧道完成首次设置及日常管理：
 

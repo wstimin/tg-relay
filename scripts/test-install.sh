@@ -8,7 +8,7 @@ for value in 0 65536 -1 abc '80;id' '1 2' 999999999; do
     if valid_port "$value"; then printf 'Invalid port accepted: %s\n' "$value"; exit 1; fi
 done
 for value in localhost panel.example.com 192.0.2.1; do valid_host "$value" || exit 1; done
-for value in 'https://example.com' 'example.com:80' 'x$(id)' 'x..y' 'bad host'; do
+for value in 'https://example.com' 'example.com:80' "x\$(id)" 'x..y' 'bad host'; do
     if valid_host "$value"; then exit 1; fi
 done
 [[ $(architecture x86_64) == amd64 && $(architecture aarch64) == arm64 ]]
@@ -21,7 +21,7 @@ if valid_username 'admin;id'; then exit 1; fi
 # Never source generated configuration as shell code.
 CONFIG_DIR=$(mktemp -d)
 trap 'rm -rf -- "$CONFIG_DIR"' EXIT
-printf '%s\n' 'TG_RELAY_LISTEN=127.0.0.1:9999' 'TG_RELAY_ADMIN_HOST=localhost' 'TG_RELAY_SECURE_COOKIE=false' 'UNRECOGNIZED=$(exit 66)' > "$CONFIG_DIR/panel.conf"
+printf '%s\n' 'TG_RELAY_LISTEN=127.0.0.1:9999' 'TG_RELAY_ADMIN_HOST=localhost' 'TG_RELAY_SECURE_COOKIE=false' "UNRECOGNIZED=\$(exit 66)" > "$CONFIG_DIR/panel.conf"
 read_configuration
 [[ $LISTEN == 127.0.0.1:9999 && $ADMIN_HOST == localhost && $SECURE_COOKIE == false ]]
 
